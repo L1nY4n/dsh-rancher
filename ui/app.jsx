@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef, useId } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useId } from 'react'
 import { Button as DshButton, Input, Checkbox, Modal as DshModal, Menu, MenuItemButton, SegmentedTabs, Tag, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import { Server, Box, Layers, Network, Activity, Settings2, RefreshCw, Plus, Pencil, Trash2, X, Search, FileText, RotateCw, Scaling, Lock, Unlock, Check, AlertCircle, Copy, ArrowUpRight, Database, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, ChevronDown, ShieldCheck } from 'lucide-react'
+import { Server, Box, Layers, Network, Activity, Settings2, RefreshCw, Plus, Pencil, Trash2, X, Search, FileText, RotateCw, Scaling, Lock, Unlock, Check, AlertCircle, Copy, ArrowUpRight, Database, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, ChevronDown, ShieldCheck, Download, ChevronsDown } from 'lucide-react'
 import { api, run, streamLogs } from './api.js'
 import { useRancherView, selectConnection, connectionsChanged } from './view.js'
 import { quantity } from '../src/resources.js'
@@ -113,10 +113,50 @@ function ErrorMessage({ error, retry }) {
   return error ? <div className="rc-error" role="alert"><AlertCircle /><span>{error}</span>{retry && <Button icon={RefreshCw} title="重试" onClick={retry} />}</div> : null
 }
 
-function Modal({ title, children, close, wide = false, busy = false, drawer = false }) {
+function DrawerResizeHandle() {
+  const handle = useRef()
+  const drag = useRef(null)
+  const [width, setWidth] = useState(() => {
+    try { const saved = Number(localStorage.getItem('rancher.podDrawerWidth')); if (saved >= 560) return saved } catch {}
+    return 1000
+  })
+  const [maximum, setMaximum] = useState(window.innerWidth - 48)
+  const minimum = Math.min(560, maximum)
+  const current = Math.max(minimum, Math.min(maximum, width))
+  useLayoutEffect(() => {
+    const dialog = handle.current.closest('[role="dialog"]')
+    const measure = () => {
+      const parent = dialog.parentElement
+      const style = getComputedStyle(parent)
+      setMaximum(Math.max(0, parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)))
+    }
+    measure(); window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
+  useLayoutEffect(() => { handle.current.closest('[role="dialog"]').style.setProperty('--rc-drawer-width', `${current}px`) }, [current])
+  const remember = value => { try { localStorage.setItem('rancher.podDrawerWidth', String(value)) } catch {} }
+  const finish = event => {
+    if (!drag.current) return
+    drag.current = null; remember(current)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+  return <div ref={handle} className="rc-drawer-resize" role="separator" tabIndex={0} aria-label="调整 Pod 窗口宽度" aria-orientation="vertical" aria-valuemin={minimum} aria-valuemax={maximum} aria-valuenow={Math.round(current)} aria-valuetext={`${Math.round(current)} 像素`} title="拖拽调整宽度 · 双击恢复默认 · ← → 微调"
+    onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.focus(); drag.current = { x: event.clientX, width: current }; event.currentTarget.setPointerCapture(event.pointerId) }}
+    onPointerMove={event => { if (drag.current) setWidth(Math.max(minimum, Math.min(maximum, drag.current.width + drag.current.x - event.clientX))) }}
+    onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={() => { drag.current = null }}
+    onDoubleClick={() => { setWidth(1000); remember(1000) }}
+    onKeyDown={event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+      event.preventDefault()
+      const next = Math.max(minimum, Math.min(maximum, event.key === 'Home' ? minimum : event.key === 'End' ? maximum : current + (event.key === 'ArrowLeft' ? 1 : -1) * (event.shiftKey ? 100 : 40)))
+      setWidth(next); remember(next)
+    }} />
+}
+
+function Modal({ title, children, close, wide = false, busy = false, drawer = false, resizable = false, onKeyDownCapture }) {
   return <DshModal open title={title} closeLabel="关闭" onClose={() => { if (!busy) close() }}
-    className={`rc-root rc-modal ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''}`} contentClassName="rc-modal-content">
-    <div className="rc-dialog-body" aria-busy={busy}>{children}</div>
+    onKeyDownCapture={onKeyDownCapture} className={`rc-root rc-modal ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${resizable ? 'rc-pod-dialog' : ''}`} contentClassName="rc-modal-content">
+    <div className="rc-dialog-body" aria-busy={busy}>{resizable && <DrawerResizeHandle />}{children}</div>
   </DshModal>
 }
 
@@ -275,19 +315,84 @@ function useLogStream(input, enabled, paused, tick) {
   return state.key === key ? state : { text: '', status: '连接中…', error: '', truncated: false }
 }
 
+function LogViewer({ text, loading, live, scroll, setScroll, filename }) {
+  const viewport = useRef()
+  const [wrap, setWrap] = useState(true)
+  const [numbers, setNumbers] = useState(true)
+  const [fontSize, setFontSize] = useState('12')
+  const [query, setQuery] = useState('')
+  const [active, setActive] = useState(0)
+  const { lines, matches, capped } = useMemo(() => {
+    const lines = text ? text.replace(/\n$/, '').split('\n') : []
+    const needle = query.toLowerCase()
+    const matches = []
+    let capped = false
+    const rows = lines.map((line, index) => {
+      const hits = []
+      if (needle) {
+        const lower = line.toLowerCase()
+        let start = 0, at
+        while ((at = lower.indexOf(needle, start)) !== -1) {
+          if (matches.length >= 2000) { capped = true; break }
+          hits.push({ at, id: matches.length }); matches.push(index); start = at + needle.length
+        }
+      }
+      return { text: line, hits }
+    })
+    return { lines: rows, matches, capped }
+  }, [text, query])
+  const selected = matches.length ? Math.min(active, matches.length - 1) : 0
+  useEffect(() => { setActive(0) }, [query])
+  useEffect(() => {
+    if (!query || !matches.length) return
+    const element = viewport.current?.querySelector(`[data-hit="${selected}"]`)
+    element?.scrollIntoView({ block: 'center', inline: 'nearest' })
+  }, [selected, query, matches.length])
+  useLayoutEffect(() => { if (scroll && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight }, [text, scroll, wrap, fontSize])
+  const move = direction => { if (matches.length) { setScroll(false); setActive((selected + direction + matches.length) % matches.length) } }
+  const latest = () => { setScroll(true); if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight }
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+    const link = document.createElement('a'); link.href = url; link.download = filename; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  return <div className="rc-log-reader">
+    <div className="rc-log-reading-toolbar">
+      <div className="rc-log-search"><Input aria-label="搜索日志" placeholder="搜索日志 · ⌘/Ctrl F" icon={<Search size={13} />} value={query}
+        onChange={event => { setQuery(event.target.value); if (event.target.value) setScroll(false) }}
+        onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); move(event.shiftKey ? -1 : 1) } else if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery('') } }} /></div>
+      {query && <><span className="rc-log-match-count" role="status">{matches.length ? selected + 1 : 0}/{matches.length}{capped ? '+' : ''}</span><Button icon={ArrowUp} title="上一个匹配" disabled={!matches.length} onClick={() => move(-1)} /><Button icon={ArrowDown} title="下一个匹配" disabled={!matches.length} onClick={() => move(1)} /><Button icon={X} title="清除日志搜索" onClick={() => setQuery('')} /></>}
+      <span className="rc-spacer" /><Checkbox className="rc-check" label="自动换行" checked={wrap} onChange={setWrap} /><Checkbox className="rc-check" label="行号" checked={numbers} onChange={setNumbers} />
+      <Select label="日志字号" value={fontSize} onChange={setFontSize} items={['11', '12', '13', '14', '16'].map(value => ({ value, label: `${value}px` }))} />
+    </div>
+    <div ref={viewport} className={`rc-code rc-logs ${wrap ? 'rc-log-wrap' : ''} ${numbers ? 'rc-log-numbers' : ''}`} style={{ fontSize: `${fontSize}px` }} aria-label="Pod 日志" tabIndex={0}
+      onWheel={event => { if (event.deltaY < 0) setScroll(false) }}
+      onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) setScroll(false) }}
+      onScroll={event => { const element = event.currentTarget; if (element.scrollHeight - element.scrollTop - element.clientHeight > 32) setScroll(false) }}>
+      {loading ? '加载中…' : lines.length ? lines.map((line, index) => {
+        const parts = []; let start = 0
+        for (const hit of line.hits) { parts.push(line.text.slice(start, hit.at), <mark key={hit.id} data-hit={hit.id} className={hit.id === selected ? 'rc-log-hit-active' : ''}>{line.text.slice(hit.at, hit.at + query.length)}</mark>); start = hit.at + query.length }
+        parts.push(line.text.slice(start))
+        return <div className="rc-log-line" key={index} data-line={index + 1}><span>{parts.length > 1 || line.text ? parts : '\u200b'}</span></div>
+      }) : live ? '等待容器日志…' : '暂无内容'}
+    </div>
+    <div className="rc-log-bottom"><span>{lines.length.toLocaleString()} 行 · {live ? '实时缓冲' : '当前快照'}{query ? ' · 搜索当前已加载日志' : ''}</span><span className="rc-spacer" /><Button icon={ChevronsDown} className="ghost" onClick={latest}>跳到最新</Button><Button icon={Download} className="ghost" disabled={!text} onClick={download}>下载日志</Button></div>
+  </div>
+}
+
 function PodDialog({ pod, scope, close, context }) {
   const tabsId = useId()
   const [tab, setTab] = useState('logs')
   const [container, setContainer] = useState(pod.containerNames?.[0] || '')
   const [tail, setTail] = useState('200')
+  const [since, setSince] = useState('')
   const [previous, setPrevious] = useState(false)
   const [copied, setCopied] = useState(false)
   const [follow, setFollow] = useState(true)
   const [paused, setPaused] = useState(false)
   const [scroll, setScroll] = useState(true)
   const [tick, setTick] = useState(0)
-  const logRef = useRef()
-  const input = { ...scope, namespaces: undefined, namespace: pod.namespace, name: pod.name, operation: tab === 'logs' ? 'logs' : 'pod', container, tailLines: Number(tail), previous }
+  const input = { ...scope, namespaces: undefined, namespace: pod.namespace, name: pod.name, operation: tab === 'logs' ? 'logs' : 'pod', container, tailLines: Number(tail), sinceSeconds: since ? Number(since) : undefined, previous }
   const live = tab === 'logs' && follow && !previous
   const result = useData(JSON.stringify(input), signal => run(input, signal), !live)
   const stream = useLogStream(input, live, paused, tick)
@@ -296,16 +401,17 @@ function PodDialog({ pod, scope, close, context }) {
   const containers = [...(pod.containerNames || []), ...(pod.initContainerNames || [])]
   const text = tab === 'logs' ? live ? stream.text : result.data?.text || '' : JSON.stringify(result.data, null, 2)
   const reload = () => { setPaused(false); setTick(value => value + 1); result.reload() }
-  useEffect(() => { if (scroll && live && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [text, scroll, live])
-  useEffect(() => { setCopied(false); setPaused(false) }, [container, tail, previous, follow])
-  return <Modal title={`${pod.namespace} / ${pod.name}`} close={close} wide drawer>
+  useEffect(() => { setCopied(false); setPaused(false) }, [container, tail, since, previous, follow])
+  return <Modal title={`${pod.namespace} / ${pod.name}`} close={close} wide drawer resizable onKeyDownCapture={event => {
+    if (tab === 'logs' && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); event.stopPropagation(); const input = event.currentTarget.querySelector('[aria-label="搜索日志"]'); input?.focus(); input?.select() }
+  }}>
     <div className="rc-pod-facts"><State good={healthy(pod, 'pods')} bad={!healthy(pod, 'pods')}>{pod.status}</State><span>就绪 <strong>{pod.ready}/{pod.containers}</strong></span><span>重启 <strong>{pod.restarts}</strong></span><span>{context}</span></div>
     <div className="rc-row"><Tabs id={tabsId} label="Pod 内容" items={[['logs', '日志', FileText], ['detail', '详情', Box]]} value={tab} onChange={setTab} /><span className="rc-spacer" /><Button icon={copied ? Check : Copy} title="复制内容" disabled={!text} onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true) } catch { setCopied(false) } }} /><Button icon={RefreshCw} title="刷新内容" disabled={!live && result.loading} onClick={reload} /></div>
     <section className="rc-pod-panel" role="tabpanel" id={`${tabsId}-${tab}-panel`} aria-labelledby={`${tabsId}-${tab}`}>
-    {tab === 'logs' && <div className="rc-row"><Field label="容器"><Select label="容器" value={container} onChange={setContainer} items={containers.map(name => ({ value: name, label: name }))} /></Field><Field label="末尾行数"><Select label="末尾行数" value={tail} onChange={setTail} items={['100', '200', '500', '1000', '5000'].map(n => ({ value: n, label: n }))} /></Field><Checkbox className="rc-check" label="上一次容器日志" checked={previous} onChange={setPrevious} /></div>}
+    {tab === 'logs' && <div className="rc-log-source-toolbar"><Field label="容器"><Select label="容器" value={container} onChange={setContainer} items={containers.map(name => ({ value: name, label: name }))} /></Field><Field label="时间范围"><Select label="日志时间范围" value={since} onChange={setSince} items={[{ value: '', label: '不限时间' }, { value: '300', label: '最近 5 分钟' }, { value: '900', label: '最近 15 分钟' }, { value: '3600', label: '最近 1 小时' }, { value: '21600', label: '最近 6 小时' }, { value: '86400', label: '最近 24 小时' }]} /></Field><Field label="末尾行数"><Select label="末尾行数" value={tail} onChange={setTail} items={['100', '200', '500', '1000', '5000'].map(n => ({ value: n, label: n }))} /></Field><Checkbox className="rc-check" label="上一次容器日志" checked={previous} onChange={setPrevious} /></div>}
     {tab === 'detail' && <div className="rc-metrics-status">{samples.error ? `指标不可用：${samples.error}` : samples.loading ? '读取容器指标中…' : `指标采样 ${date(sample?.timestamp)} · 窗口 ${sample?.window || '—'}`}<Button icon={RefreshCw} title="刷新容器指标" onClick={samples.reload} disabled={samples.loading} /></div>}
     {tab === 'logs' && <div className="rc-log-toolbar"><Checkbox className="rc-check" label="实时跟随" checked={follow && !previous} disabled={previous} onChange={setFollow} /><Checkbox className="rc-check" label="自动滚动" checked={scroll} onChange={setScroll} />{live && <Button onClick={() => setPaused(value => !value)}>{paused ? '继续跟随' : '暂停日志'}</Button>}<span className="rc-log-status" role="status"><State good={live && stream.status === '实时跟随中'} bad={live && !!stream.error}>{live ? stream.status : previous ? '上次实例 · 快照' : '日志快照'}</State></span>{stream.truncated && live && <span className="rc-muted">已保留最近 10,000 行 / 1 MiB</span>}</div>}
-    <ErrorMessage error={live ? stream.error : result.error} retry={reload} />{tab === 'detail' && result.data ? <PodDetails data={result.data} text={text} usage={sample} /> : <pre ref={logRef} className={`rc-code ${tab === 'logs' ? 'rc-logs' : ''}`} aria-label={tab === 'logs' ? 'Pod 日志' : 'Pod 详情'}>{!live && result.loading ? '加载中…' : text || (live ? '等待容器日志…' : '暂无内容')}</pre>}
+    <ErrorMessage error={live ? stream.error : result.error} retry={reload} />{tab === 'logs' ? <LogViewer text={text} loading={!live && result.loading} live={live} scroll={scroll} setScroll={setScroll} filename={`${pod.namespace}_${pod.name}_${container || 'container'}.log`} /> : result.data ? <PodDetails data={result.data} text={text} usage={sample} /> : <pre className="rc-code">{result.loading ? '加载中…' : '暂无内容'}</pre>}
     </section>
   </Modal>
 }

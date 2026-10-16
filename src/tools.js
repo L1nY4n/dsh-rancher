@@ -32,6 +32,7 @@ export function toolsFor(store, manager) {
       ...fields, operation: { type: 'string', enum: READ_OPERATIONS }, container: { type: 'string' },
       namespaces: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'Multiple namespaces for resource/Pod metric lists. Empty means all. Do not combine with namespace.' },
       tailLines: { type: 'integer', minimum: 1, maximum: 5000 }, previous: { type: 'boolean' },
+      sinceSeconds: { type: 'integer', minimum: 1, maximum: 86400, description: 'Only return logs newer than this many seconds, still limited by tailLines.' },
       labelSelector: { type: 'string' }, node: { type: 'string' },
     }, ['connectionId', 'operation'], (args, signal) => {
       check(READ_OPERATIONS.includes(args.operation), '只读工具不支持此操作')

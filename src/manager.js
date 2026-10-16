@@ -8,6 +8,12 @@ export const WRITE_OPERATIONS = ['delete-pod', 'cordon', 'uncordon', 'restart-de
 const ready = resource => (resource.status?.conditions || []).find(condition => condition.type === 'Ready')?.status === 'True'
 const meta = resource => ({ name: resource.metadata?.name, namespace: resource.metadata?.namespace || '', uid: resource.metadata?.uid, createdAt: resource.metadata?.creationTimestamp })
 
+function logTimeRange(query, sinceSeconds) {
+  if (sinceSeconds === undefined) return
+  check(Number.isInteger(sinceSeconds) && sinceSeconds >= 1 && sinceSeconds <= 86400, '日志时间范围必须为 1–86400 秒的整数')
+  query.set('sinceSeconds', String(sinceSeconds))
+}
+
 export function podView(pod) {
   const statuses = pod.status?.containerStatuses || []
   const initStatuses = pod.status?.initContainerStatuses || []
@@ -107,6 +113,7 @@ export class RancherManager {
       check(Number.isInteger(tail) && tail >= 1 && tail <= 5000, '日志行数必须为 1–5000')
       check(input.previous === undefined || typeof input.previous === 'boolean', 'previous 必须是布尔值')
       const query = new URLSearchParams({ tailLines: String(tail), timestamps: 'true', limitBytes: '524288' })
+      logTimeRange(query, input.sinceSeconds)
       if (input.container) query.set('container', segment(input.container, '容器'))
       if (input.previous) query.set('previous', 'true')
       return { text: await request(`${podPath}/log?${query}`, { text: true }), tailLines: tail }
@@ -133,6 +140,7 @@ export class RancherManager {
     check(Number.isInteger(tail) && tail >= 1 && tail <= 5000, '日志行数必须为 1–5000')
     check(input.previous === undefined || input.previous === false, '上一次容器日志不支持实时跟随')
     const query = new URLSearchParams({ follow: 'true', timestamps: 'true', tailLines: String(tail) })
+    logTimeRange(query, input.sinceSeconds)
     if (container) query.set('container', segment(container, '容器'))
     const client = new RancherClient(this.store.get(connectionId))
     const path = client.k8s(clusterId, `api/v1/namespaces/${segment(namespace, '命名空间')}/pods/${segment(name)}/log?${query}`)

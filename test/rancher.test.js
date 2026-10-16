@@ -120,6 +120,23 @@ test('snapshot and follow logs negotiate Kubernetes media types while reading pl
   assert.deepEqual(state.calls.filter(call => call.path.endsWith('/log')).map(call => call.accept), ['application/json', 'application/json'])
 })
 
+test('log time ranges reach snapshot and stream requests; invalid ranges never reach Rancher', async t => {
+  const { run, manager, scope, state } = await setup(t, { handler: ({ res, url }) => {
+    if (!url.pathname.endsWith('/log')) return false
+    res.writeHead(200, { 'content-type': 'text/plain' }); res.end('recent log\n')
+    return true
+  } })
+  await run({ operation: 'logs', namespace: 'production', name: 'api', sinceSeconds: 300, previous: true })
+  await manager.streamLogs({ ...scope, namespace: 'production', name: 'api', sinceSeconds: 86400 }, undefined, () => {})
+  assert.deepEqual(state.calls.filter(call => call.path.endsWith('/log')).map(call => call.query.sinceSeconds), ['300', '86400'])
+  const count = state.calls.length
+  for (const sinceSeconds of [0, -1, 1.5, '300', null, 86401]) {
+    await assert.rejects(run({ operation: 'logs', namespace: 'production', name: 'api', sinceSeconds }), /时间范围/)
+    await assert.rejects(manager.streamLogs({ ...scope, namespace: 'production', name: 'api', sinceSeconds }, undefined, () => {}), /时间范围/)
+  }
+  assert.equal(state.calls.length, count)
+})
+
 test('follow logs deliver incrementally, redact chunk boundaries and drop oversized lines', async t => {
   const { manager, scope, state } = await setup(t, { handler: ({ res, url }) => {
     if (!url.pathname.endsWith('/log')) return false
