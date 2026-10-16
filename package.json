@@ -1,6 +1,6 @@
 {
   "name": "dsh-rancher",
-  "version": "0.2.9",
+  "version": "0.2.16",
   "type": "module",
   "description": "Rancher cluster, node, Pod and workload management inside DeepSeek Harness",
   "author": "L1nY4n",
@@ -31,7 +31,8 @@
     "lucide-react": "^0.468.0",
     "playwright": "^1.58.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-virtuoso": "^4.18.19"
   },
   "license": "MIT"
 }

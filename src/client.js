@@ -41,7 +41,7 @@ export class RancherClient {
     return `Bearer ${this.connection.token}`
   }
 
-  async request(endpoint, { method = 'GET', body, text = false, signal, contentType = 'application/json', noAuth = false } = {}) {
+  async request(endpoint, { method = 'GET', body, text = false, signal, contentType = 'application/json', noAuth = false, timeoutMs = 20_000 } = {}) {
     const target = new URL(endpoint.replace(/^\//, ''), this.base)
     check(target.origin === this.base.origin && target.pathname.startsWith(this.base.pathname), '拒绝向其它服务器发送凭据')
     const payload = body === undefined ? undefined : JSON.stringify(body)
@@ -81,38 +81,60 @@ export class RancherClient {
         })
       })
       // An absolute deadline also bounds a slow trickle response.
-      const timeout = setTimeout(() => request.destroy(new ApiError(504, 'Rancher 请求超时（20 秒）')), 20_000)
+      const timeout = setTimeout(() => request.destroy(new ApiError(504, `Rancher 请求超时（${timeoutMs / 1000} 秒）`)), timeoutMs)
       request.on('close', () => clearTimeout(timeout))
       request.on('error', error => reject(error instanceof ApiError ? error : new ApiError(502, this.redact(error.message))))
       request.end(payload)
     })
   }
 
-  async list(endpoint, query = {}, signal) {
+  async *listPages(endpoint, query = {}, signal, { pageSize, timeoutMs } = {}) {
     const initial = new URL(endpoint.replace(/^\//, ''), this.base)
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') initial.searchParams.set(key, value)
     const kubernetes = initial.pathname.includes('/k8s/clusters/')
-    initial.searchParams.set('limit', kubernetes ? '500' : '100')
+    const limit = pageSize || (kubernetes ? 500 : 100)
+    initial.searchParams.set('limit', String(limit))
     let current = initial
-    const result = []
     const visited = new Set()
-    for (let page = 0; page < 40; page++) {
+    for (let page = 0; page < Math.max(40, Math.ceil(20_000 / limit)); page++) {
       check(current.origin === initial.origin && current.pathname === initial.pathname, '分页链接超出当前资源范围', 502)
       check(!visited.has(current.href), 'Rancher 返回重复分页链接', 502)
       visited.add(current.href)
       const endpoint = current.pathname.slice(this.base.pathname.length) + current.search
-      const response = await this.request(endpoint, { signal })
+      const response = await this.request(endpoint, { signal, timeoutMs })
       const items = response.items ?? response.data
       check(Array.isArray(items), 'Rancher 资源列表格式错误', 502)
-      result.push(...items)
+      yield items
       if (kubernetes && response.metadata?.continue) {
         current = new URL(initial)
         current.searchParams.set('continue', response.metadata.continue)
       } else if (!kubernetes && response.pagination?.next) {
         current = new URL(response.pagination.next, current)
-      } else return result
+      } else return
     }
     throw new ApiError(502, '资源超过分页上限，请缩小筛选范围')
+  }
+
+  async listPage(endpoint, query = {}, signal, { pageSize = 50, cursor = '', timeoutMs = 30_000 } = {}) {
+    check(Number.isInteger(pageSize) && pageSize >= 1 && pageSize <= 100, '分页大小无效')
+    check(typeof cursor === 'string' && cursor.length <= 8192, '分页游标无效')
+    const target = new URL(endpoint.replace(/^\//, ''), this.base)
+    check(target.pathname.includes('/k8s/clusters/'), '仅支持 Kubernetes 资源分页')
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') target.searchParams.set(key, value)
+    target.searchParams.set('limit', String(pageSize))
+    if (cursor) target.searchParams.set('continue', cursor)
+    const response = await this.request(target.pathname.slice(this.base.pathname.length) + target.search, { signal, timeoutMs })
+    check(Array.isArray(response.items), 'Kubernetes 资源列表格式错误', 502)
+    check(response.items.length <= pageSize, 'Kubernetes 返回的资源数超过分页大小', 502)
+    const next = response.metadata?.continue || ''
+    check(typeof next === 'string' && next.length <= 8192, 'Kubernetes 分页游标无效', 502)
+    return { items: response.items, next }
+  }
+
+  async list(endpoint, query = {}, signal, options) {
+    const result = []
+    for await (const items of this.listPages(endpoint, query, signal, options)) result.push(...items)
+    return result
   }
 
   async stream(endpoint, { signal, consume }) {

@@ -11,8 +11,8 @@ export function fixtureState() {
   const pods = ['api-7f44b8-x2k9p', 'web-69f6c7-m8v2n', 'redis-0', 'worker-6f755-p4m6t', 'coredns-6b6889-q2z7r'].map((name, index) => ({ metadata: { ...metadata(name, index === 4 ? 'kube-system' : 'production'), labels: { app: name.split('-')[0] }, ownerReferences: [{ kind: 'ReplicaSet', name: name.split('-')[0] }] },
     spec: { nodeName: nodes[index % 3].metadata.name, containers: [{ name: 'main', image: 'registry.example.com/app:1.4.2', resources: { requests: { cpu: '100m', memory: '128Mi' }, ...(index === 4 ? {} : { limits: { cpu: '1', memory: '512Mi' } }) }, env: [{ name: 'PASSWORD', value: 'must-not-be-returned' }] }], initContainers: [{ name: 'init', image: 'busybox:1.37' }] },
     status: { phase: 'Running', podIP: `10.42.2.${index + 3}`, qosClass: 'Burstable', containerStatuses: [{ name: 'main', ready: index !== 3, restartCount: index === 3 ? 12 : 0, state: index === 3 ? { waiting: { reason: 'CrashLoopBackOff' } } : { running: { startedAt: created } } }] } }))
-  const deployments = ['api', 'web', 'worker'].map((name, index) => ({ metadata: metadata(name, 'production'),
-    spec: { replicas: 3, template: { spec: { containers: [{ name, image: `registry.example.com/${name}:1.4.2` }] } } }, status: { readyReplicas: index === 2 ? 2 : 3, availableReplicas: index === 2 ? 2 : 3 } }))
+  const deployments = ['api', 'web', 'worker'].map((name, index) => ({ metadata: { ...metadata(name, 'production'), generation: 1 },
+    spec: { replicas: 3, template: { spec: { containers: [{ name, image: `registry.example.com/${name}:1.4.2` }] } } }, status: { replicas: 3, observedGeneration: 1, updatedReplicas: 3, readyReplicas: index === 2 ? 2 : 3, availableReplicas: index === 2 ? 2 : 3 } }))
   return { nodes, pods, deployments, calls: [] }
 }
 
@@ -85,6 +85,16 @@ export async function mockRancher({ state = fixtureState(), handler, tlsOptions 
       if (deployment) {
         if (path.endsWith('/scale')) deployment.spec.replicas = body.spec.replicas
         else deployment.spec.template.metadata = body.spec.template.metadata
+        deployment.metadata.generation = (deployment.metadata.generation || 1) + 1
+        const generation = deployment.metadata.generation
+        setTimeout(() => {
+          if (deployment.metadata.generation !== generation) return
+          deployment.status.observedGeneration = generation
+          deployment.status.replicas = deployment.spec.replicas
+          deployment.status.updatedReplicas = deployment.spec.replicas
+          deployment.status.readyReplicas = deployment.spec.replicas
+          deployment.status.availableReplicas = deployment.spec.replicas
+        }, 500)
         return send(200, deployment)
       }
     }

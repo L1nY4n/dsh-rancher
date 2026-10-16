@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useId } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { Button as DshButton, Input, Checkbox, Modal as DshModal, Menu, MenuItemButton, SegmentedTabs, Tag, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import { Server, Box, Layers, Network, Activity, Settings2, RefreshCw, Plus, Pencil, Trash2, X, Search, FileText, RotateCw, Scaling, Lock, Unlock, Check, AlertCircle, Copy, ArrowUpRight, Database, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, ChevronDown, ShieldCheck, Download, ChevronsDown } from 'lucide-react'
-import { api, run, streamLogs } from './api.js'
+import { Server, Box, Layers, Network, Activity, Settings2, RefreshCw, Plus, Pencil, Trash2, X, Search, FileText, RotateCw, Scaling, Lock, Unlock, Check, AlertCircle, Copy, ArrowUpRight, Database, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, ChevronDown, ShieldCheck, Download, ChevronsDown, Rows3 } from 'lucide-react'
+import { api, run, streamLogs, pagePods } from './api.js'
+import { RancherIcon } from './rancher-icon.jsx'
 import { useRancherView, selectConnection, connectionsChanged } from './view.js'
 import { quantity } from '../src/resources.js'
 
-const TABS = [ ['nodes', '节点', Server], ['pods', 'Pods', Box], ['namespaces', '命名空间', Database], ['deployments', '工作负载', Layers], ['services', '服务', Network], ['events', '事件', Activity] ]
+const TABS = [ ['nodes', '节点', Server], ['pods', 'Pods', Box], ['deployments', '工作负载', Layers], ['services', '服务', Network], ['events', '事件', Activity] ]
 const idOf = item => item.uid || item.id || `${item.namespace}/${item.name}`
 const date = value => value ? new Date(value).toLocaleString() : '—'
 const age = value => {
@@ -23,7 +25,7 @@ const memory = value => {
 const cpu = value => value === null || value === undefined || value === '' ? '—' : `${Number(Number(value).toFixed(3))}`
 const cpuUsage = value => value === null || value === undefined ? '—' : value < 1 ? `${Number((value * 1000).toFixed(1))}m` : `${Number(value.toFixed(2))} 核`
 const memUsage = value => value === null || value === undefined ? '—' : memory(value)
-const healthy = (row, type) => type === 'nodes' ? row.ready && !row.pressure?.length : type === 'pods' ? (row.status === 'Running' && row.ready === row.containers) || row.status === 'Succeeded' : type === 'namespaces' ? row.status === 'Active' : type === 'deployments' ? row.ready === row.replicas && row.available >= row.replicas : type === 'events' ? row.type !== 'Warning' : true
+const healthy = (row, type) => type === 'nodes' ? row.ready && !row.pressure?.length : type === 'pods' ? (row.status === 'Running' && row.ready === row.containers) || row.status === 'Succeeded' : type === 'deployments' ? row.ready === row.replicas && row.available >= row.replicas : type === 'events' ? row.type !== 'Warning' : true
 
 function ResourceUsage({ value, total, kind, stale = false, title = '' }) {
   const percent = value != null && total > 0 ? value / total * 100 : null
@@ -43,19 +45,24 @@ function useData(key, fetcher, enabled = true, interval = false) {
   const [state, setState] = useState({ key: '', data: null, loading: false, error: '', at: null })
   const [tick, setTick] = useState(0)
   const ref = useRef(fetcher)
+  const active = useRef(null)
   ref.current = fetcher
   useEffect(() => {
     if (!enabled) { setState({ key, data: null, loading: false, error: '', at: null }); return }
     const abort = new AbortController()
+    active.current = abort
     setState(old => ({ key, data: old.key === key ? old.data : null, loading: true, error: '', at: old.key === key ? old.at : null }))
-    ref.current(abort.signal).then(data => {
+    ref.current(abort.signal, data => {
+      if (!abort.signal.aborted) setState(old => old.key === key ? { ...old, data, loading: true, error: '', at: null } : old)
+    }).then(data => {
       if (!abort.signal.aborted) setState({ key, data, loading: false, error: '', at: new Date() })
     }).catch(error => { if (!abort.signal.aborted) setState(old => ({ ...old, loading: false, error: error.message })) })
-    return () => abort.abort()
+      .finally(() => { if (active.current === abort) active.current = null })
+    return () => { abort.abort(); if (active.current === abort) active.current = null }
   }, [key, tick, enabled])
   useEffect(() => {
     if (!interval || !enabled) return
-    const timer = setInterval(() => { if (!document.hidden) setTick(value => value + 1) }, 15000)
+    const timer = setInterval(() => { if (!document.hidden && !active.current) setTick(value => value + 1) }, 15000)
     return () => clearInterval(timer)
   }, [interval, enabled])
   return { ...(state.key === key ? state : { data: null, loading: enabled, error: '', at: null }), reload: () => setTick(value => value + 1) }
@@ -217,7 +224,7 @@ function Connections({ connections, refresh, select, saved }) {
     catch (error) { setError(error.message) } finally { setBusy(false) }
   }
   return <><div className="rc-toolbar"><h3>Rancher 连接</h3><span className="rc-spacer" /><Button icon={Plus} onClick={() => setEdit(null)}>添加连接</Button></div>
-    <div className="rc-connections">{connections.map(entry => <div className="rc-connection" key={entry.id}><Server /><div className="rc-connection-info"><strong>{entry.name}</strong><small>{entry.url}</small><div className="rc-connection-auth"><Lock size={11} />{authName(entry.authType)}<span>·</span>{entry.url.startsWith('https://') ? '不校验证书' : '本机 HTTP'}</div></div><State good={entry.allowWrites}>{entry.allowWrites ? '可管理' : '只读'}</State><div className="rc-connection-actions"><Button icon={ArrowUpRight} title={`打开 ${entry.name}`} onClick={() => select(entry.id)} /><Button icon={Pencil} title={`编辑 ${entry.name}`} onClick={() => setEdit(entry)} /><Button icon={Trash2} className="danger" title={`移除 ${entry.name}`} onClick={() => { setError(''); setRemove(entry) }} /></div></div>)}</div>
+    <div className="rc-connections">{connections.map(entry => <div className="rc-connection" key={entry.id}><RancherIcon /><div className="rc-connection-info"><strong>{entry.name}</strong><small>{entry.url}</small><div className="rc-connection-auth"><Lock size={11} />{authName(entry.authType)}<span>·</span>{entry.url.startsWith('https://') ? '不校验证书' : '本机 HTTP'}</div></div><State good={entry.allowWrites}>{entry.allowWrites ? '可管理' : '只读'}</State><div className="rc-connection-actions"><Button icon={ArrowUpRight} title={`打开 ${entry.name}`} onClick={() => select(entry.id)} /><Button icon={Pencil} title={`编辑 ${entry.name}`} onClick={() => setEdit(entry)} /><Button icon={Trash2} className="danger" title={`移除 ${entry.name}`} onClick={() => { setError(''); setRemove(entry) }} /></div></div>)}</div>
     {!connections.length && <Empty>尚未配置 Rancher 连接</Empty>}
     {edit !== undefined && <ConnectionForm entry={edit} close={() => setEdit(undefined)} saved={saved} />}
     {remove && <Modal title="移除连接" close={() => setRemove(null)} busy={busy}><p>移除本地保存的「{remove.name}」连接及认证信息？</p><ErrorMessage error={error} /><div className="rc-modal-actions"><Button onClick={() => setRemove(null)} disabled={busy}>取消</Button><Button icon={Trash2} className="danger" disabled={busy} onClick={deleteConnection}>移除</Button></div></Modal>}
@@ -245,8 +252,11 @@ export function ConnectionSettings({ embedded = false, onOpenWorkbench }) {
 
 function ActionDialog({ action, scope, close, completed }) {
   const [replicas, setReplicas] = useState(String(action.row.replicas ?? 1))
-  const [busy, setBusy] = useState(false)
+  const [phase, setPhase] = useState('confirm')
   const [error, setError] = useState('')
+  const monitor = useRef(null)
+  useEffect(() => () => monitor.current?.abort(), [])
+  const dismiss = () => { if (phase === 'monitoring') completed(`${action.label}已提交，已停止自动核对，请稍后刷新资源检查。`); monitor.current?.abort(); close() }
   const valid = /^\d+$/.test(replicas) && Number(replicas) <= 10000
   const messages = {
     'delete-pod': '删除后，受工作负载控制器管理的 Pod 会按副本策略重建。独立 Pod 不会自动恢复。',
@@ -256,14 +266,47 @@ function ActionDialog({ action, scope, close, completed }) {
     'scale-deployment': '将修改目标副本数。设为 0 会停止此 Deployment 的所有 Pod。',
   }
   async function submit() {
-    setBusy(true); setError('')
-    try { await run({ ...scope, namespaces: undefined, operation: action.operation, name: action.row.name, namespace: action.row.namespace || undefined, uid: action.row.uid, replicas: Number(replicas) }); completed(); close() }
-    catch (error) { setError(error.message) } finally { setBusy(false) }
+    setPhase('submitting'); setError('')
+    const controller = new AbortController()
+    monitor.current = controller
+    let accepted = false
+    try {
+      const result = await run({ ...scope, namespaces: undefined, operation: action.operation, name: action.row.name, namespace: action.row.namespace || undefined, uid: action.row.uid, replicas: Number(replicas) }, controller.signal)
+      accepted = true
+      completed(`${action.label}请求已提交，正在核对资源状态…`)
+      setPhase('monitoring')
+      if (['restart-deployment', 'scale-deployment'].includes(action.operation) && !Number.isInteger(result.generation)) throw new Error('服务端未返回资源版本')
+      const readOperation = action.operation === 'delete-pod' ? 'pods' : ['cordon', 'uncordon'].includes(action.operation) ? 'nodes' : 'deployments'
+      const deadline = Date.now() + 45000
+      let verified = false
+      while (!controller.signal.aborted && Date.now() < deadline) {
+        const rows = await run({ ...scope, namespaces: undefined, namespace: action.row.namespace || undefined, operation: readOperation }, controller.signal)
+        const row = rows.find(item => item.name === action.row.name)
+        if (action.operation === 'delete-pod' && (!row || row.uid !== action.row.uid)) { verified = true; break }
+        if (['cordon', 'uncordon'].includes(action.operation) && row?.uid === action.row.uid && row.unschedulable === (action.operation === 'cordon')) { verified = true; break }
+        if (['restart-deployment', 'scale-deployment'].includes(action.operation) && row) {
+          if (row.generation > result.generation) throw new Error('资源随后发生其他变更，无法确认本次操作')
+          const desired = action.operation === 'scale-deployment' ? Number(replicas) : row.replicas
+          if (row.generation === result.generation && row.observedGeneration >= result.generation && row.replicas === desired && row.current === desired && row.updated === desired && row.ready === desired && row.available === desired) { verified = true; break }
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+      if (controller.signal.aborted) return
+      if (!verified) throw new Error('等待超过 45 秒，请稍后刷新资源检查状态')
+      completed(`${action.label} 已完成：${action.row.namespace ? `${action.row.namespace}/` : ''}${action.row.name}`, true)
+      close()
+    } catch (error) {
+      if (controller.signal.aborted) return
+      setPhase(accepted ? 'unverified' : 'confirm')
+      setError(accepted ? `请求已提交，但状态未确认：${error.message}` : error.message)
+      if (accepted) completed(`${action.label}已提交，状态未确认，请稍后刷新资源检查。`)
+    }
   }
-  return <Modal title={action.label} close={close} busy={busy}>
+  return <Modal title={action.label} close={dismiss} busy={phase === 'submitting'}>
     <p className="rc-muted">{action.connectionName} · {action.clusterName}</p><p><strong>{action.row.namespace ? `${action.row.namespace}/` : ''}{action.row.name}</strong></p><p className="rc-muted">{messages[action.operation]}</p>
     {action.operation === 'scale-deployment' && <><p className="rc-muted">副本数：{action.row.replicas} → {valid ? replicas : '请输入有效数值'}</p><Field label="目标副本数"><Input type="number" className="rc-input" min={0} max={10000} step={1} value={replicas} onChange={e => setReplicas(e.target.value)} /></Field></>}
-    <ErrorMessage error={error} /><div className="rc-modal-actions"><Button onClick={close} disabled={busy}>取消</Button><Button icon={Check} className={action.operation === 'delete-pod' ? 'danger' : 'primary'} disabled={busy || (action.operation === 'scale-deployment' && !valid)} onClick={submit}>{busy ? '提交中…' : '确认执行'}</Button></div>
+    {phase === 'monitoring' && <p className="rc-muted" role="status">请求已提交，正在核对资源状态…</p>}
+    <ErrorMessage error={error} /><div className="rc-modal-actions"><Button onClick={dismiss} disabled={phase === 'submitting'}>{phase === 'confirm' ? '取消' : phase === 'monitoring' ? '稍后查看' : '关闭'}</Button>{['confirm', 'submitting'].includes(phase) && <Button icon={Check} className={action.operation === 'delete-pod' ? 'danger' : 'primary'} disabled={phase !== 'confirm' || (action.operation === 'scale-deployment' && !valid)} onClick={submit}>{phase === 'submitting' ? '提交中…' : '确认执行'}</Button>}</div>
   </Modal>
 }
 
@@ -317,12 +360,13 @@ function useLogStream(input, enabled, paused, tick) {
 
 function LogViewer({ text, loading, live, scroll, setScroll, filename }) {
   const viewport = useRef()
+  const virtualList = useRef()
   const [wrap, setWrap] = useState(true)
   const [numbers, setNumbers] = useState(true)
   const [fontSize, setFontSize] = useState('12')
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
-  const { lines, matches, capped } = useMemo(() => {
+  const { lines, visible, matches, capped } = useMemo(() => {
     const lines = text ? text.replace(/\n$/, '').split('\n') : []
     const needle = query.toLowerCase()
     const matches = []
@@ -337,20 +381,23 @@ function LogViewer({ text, loading, live, scroll, setScroll, filename }) {
           hits.push({ at, id: matches.length }); matches.push(index); start = at + needle.length
         }
       }
-      return { text: line, hits }
+      return { text: line, hits, index }
     })
-    return { lines: rows, matches, capped }
+    const visible = needle ? rows.filter(row => row.text.toLowerCase().includes(needle)) : rows
+    return { lines: rows, visible, matches, capped }
   }, [text, query])
   const selected = matches.length ? Math.min(active, matches.length - 1) : 0
   useEffect(() => { setActive(0) }, [query])
   useEffect(() => {
     if (!query || !matches.length) return
-    const element = viewport.current?.querySelector(`[data-hit="${selected}"]`)
-    element?.scrollIntoView({ block: 'center', inline: 'nearest' })
+    const index = visible.findIndex(line => line.index === matches[selected])
+    if (index !== -1) virtualList.current?.scrollToIndex({ index, align: 'center' })
+    const frame = requestAnimationFrame(() => viewport.current?.querySelector(`[data-hit="${selected}"]`)?.scrollIntoView({ block: 'center', inline: 'nearest' }))
+    return () => cancelAnimationFrame(frame)
   }, [selected, query, matches.length])
-  useLayoutEffect(() => { if (scroll && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight }, [text, scroll, wrap, fontSize])
+  useLayoutEffect(() => { if (scroll && visible.length) virtualList.current?.scrollToIndex({ index: visible.length - 1, align: 'end' }) }, [text, scroll, wrap, fontSize, visible.length])
   const move = direction => { if (matches.length) { setScroll(false); setActive((selected + direction + matches.length) % matches.length) } }
-  const latest = () => { setScroll(true); if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight }
+  const latest = () => { setScroll(true); virtualList.current?.scrollToIndex({ index: visible.length - 1, align: 'end' }) }
   const download = () => {
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
     const link = document.createElement('a'); link.href = url; link.download = filename; link.click()
@@ -365,18 +412,20 @@ function LogViewer({ text, loading, live, scroll, setScroll, filename }) {
       <span className="rc-spacer" /><Checkbox className="rc-check" label="自动换行" checked={wrap} onChange={setWrap} /><Checkbox className="rc-check" label="行号" checked={numbers} onChange={setNumbers} />
       <Select label="日志字号" value={fontSize} onChange={setFontSize} items={['11', '12', '13', '14', '16'].map(value => ({ value, label: `${value}px` }))} />
     </div>
-    <div ref={viewport} className={`rc-code rc-logs ${wrap ? 'rc-log-wrap' : ''} ${numbers ? 'rc-log-numbers' : ''}`} style={{ fontSize: `${fontSize}px` }} aria-label="Pod 日志" tabIndex={0}
+    <div className="rc-log-viewport"
       onWheel={event => { if (event.deltaY < 0) setScroll(false) }}
       onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) setScroll(false) }}
-      onScroll={event => { const element = event.currentTarget; if (element.scrollHeight - element.scrollTop - element.clientHeight > 32) setScroll(false) }}>
-      {loading ? '加载中…' : lines.length ? lines.map((line, index) => {
+      onScrollCapture={event => { const element = event.target; if (element === viewport.current && element.scrollHeight - element.scrollTop - element.clientHeight > 32) setScroll(false) }}>
+      {loading || !visible.length ? <div className="rc-code rc-logs" aria-label="Pod 日志" tabIndex={0}>{loading ? '加载中…' : query && lines.length ? '没有匹配的日志' : live ? '等待容器日志…' : '暂无内容'}</div> : <Virtuoso ref={virtualList} scrollerRef={element => { viewport.current = element }}
+        className={`rc-code rc-logs ${wrap ? 'rc-log-wrap' : ''} ${numbers ? 'rc-log-numbers' : ''}`} style={{ fontSize: `${fontSize}px` }} aria-label="Pod 日志" tabIndex={0}
+        data={visible} increaseViewportBy={200} followOutput={scroll ? 'auto' : false} itemContent={(index, line) => {
         const parts = []; let start = 0
         for (const hit of line.hits) { parts.push(line.text.slice(start, hit.at), <mark key={hit.id} data-hit={hit.id} className={hit.id === selected ? 'rc-log-hit-active' : ''}>{line.text.slice(hit.at, hit.at + query.length)}</mark>); start = hit.at + query.length }
         parts.push(line.text.slice(start))
-        return <div className="rc-log-line" key={index} data-line={index + 1}><span>{parts.length > 1 || line.text ? parts : '\u200b'}</span></div>
-      }) : live ? '等待容器日志…' : '暂无内容'}
+        return <div className="rc-log-line" data-line={line.index + 1}><span>{parts.length > 1 || line.text ? parts : '\u200b'}</span></div>
+      }} />}
     </div>
-    <div className="rc-log-bottom"><span>{lines.length.toLocaleString()} 行 · {live ? '实时缓冲' : '当前快照'}{query ? ' · 搜索当前已加载日志' : ''}</span><span className="rc-spacer" /><Button icon={ChevronsDown} className="ghost" onClick={latest}>跳到最新</Button><Button icon={Download} className="ghost" disabled={!text} onClick={download}>下载日志</Button></div>
+    <div className="rc-log-bottom"><span>{query ? `${visible.length.toLocaleString()} / ${lines.length.toLocaleString()}` : lines.length.toLocaleString()} 行 · {live ? '实时缓冲' : '当前快照'}{query ? ' · 仅显示匹配行' : ''}</span><span className="rc-spacer" /><Button icon={ChevronsDown} className="ghost" onClick={latest}>跳到最新</Button><Button icon={Download} className="ghost" disabled={!text} onClick={download}>下载日志</Button></div>
   </div>
 }
 
@@ -445,28 +494,37 @@ function Workbench({ openSettings }) {
   const [sort, setSort] = useState({ key: '', descending: false })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [podPaging, setPodPaging] = useState({ key: '', index: 0, cursors: [null] })
   const tableRef = useRef()
   const list = connections.data || []
   const connection = list.find(item => item.id === connectionId)
   useEffect(() => { if (connections.data && !list.some(item => item.id === connectionId)) chooseConnection(list[0]?.id || '') }, [connections.data])
   const clusters = useData(`clusters:${connectionId}:${connectionRevision}`, signal => run({ connectionId, operation: 'clusters' }, signal), Boolean(connection))
   useEffect(() => { if (clusters.data) setClusterId(current => clusters.data.some(item => item.id === current) ? current : clusters.data[0]?.id || '') }, [clusters.data])
-  const namespaces = useData(`namespaces:${connectionId}:${clusterId}:${connectionRevision}`, signal => run({ connectionId, clusterId, operation: 'namespaces' }, signal), Boolean(connection && clusterId), auto && tab === 'namespaces')
+  const namespaces = useData(`namespaces:${connectionId}:${clusterId}:${connectionRevision}`, signal => run({ connectionId, clusterId, operation: 'namespaces' }, signal), Boolean(connection && clusterId))
   useEffect(() => {
     if (namespaces.data) setNamespace(current => {
       const valid = current.filter(name => namespaces.data.some(item => item.name === name))
       return valid.length === current.length ? current : valid
     })
   }, [namespaces.data])
-  const clusterScoped = tab === 'nodes' || tab === 'namespaces'
+  const clusterScoped = tab === 'nodes'
   const scope = { connectionId, clusterId, ...(clusterScoped ? {} : { namespaces: namespace }) }
-  const resourceKey = JSON.stringify({ ...scope, connectionRevision, tab, node: tab === 'pods' ? node : '' })
-  const resourceData = useData(resourceKey, signal => run({ ...scope, operation: tab, node: tab === 'pods' ? node : undefined }, signal), Boolean(connection && clusterId && tab !== 'namespaces'), auto)
-  const resources = tab === 'namespaces' ? namespaces : resourceData
+  const podScopeKey = JSON.stringify({ ...scope, connectionRevision, node, pageSize })
+  const activePodPaging = podPaging.key === podScopeKey ? podPaging : { key: podScopeKey, index: 0, cursors: [null] }
+  const resourceKey = JSON.stringify({ ...scope, connectionRevision, tab, node: tab === 'pods' ? node : '', ...(tab === 'pods' ? { pageSize, cursor: activePodPaging.cursors[activePodPaging.index] } : {}) })
+  const resources = useData(resourceKey, signal => tab === 'pods'
+    ? pagePods({ ...scope, node, pageSize, cursor: activePodPaging.cursors[activePodPaging.index] }, signal)
+    : run({ ...scope, operation: tab }, signal), Boolean(connection && clusterId), auto)
   const hasMetrics = tab === 'nodes' || tab === 'pods'
   const metricScope = { connectionId, clusterId, ...(tab === 'pods' ? { namespaces: namespace } : {}), operation: tab === 'nodes' ? 'node-metrics' : 'pod-metrics', connectionRevision }
   const metrics = useData(JSON.stringify(metricScope), signal => run(metricScope, signal), Boolean(connection && clusterId && hasMetrics), auto)
-  function refresh() { resources.reload(); if (tab !== 'namespaces') namespaces.reload(); if (hasMetrics) metrics.reload() }
+  function refresh() {
+    if (tab === 'pods' && activePodPaging.index) setPodPaging({ key: podScopeKey, index: 0, cursors: [null] })
+    else resources.reload()
+    namespaces.reload()
+    if (hasMetrics) metrics.reload()
+  }
   useEffect(() => { setAction(null); setPod(null); setNodeDetail(null); setSearch(''); setStatusFilter(''); setSort({ key: '', descending: false }); setNotice('') }, [connectionId, clusterId, namespace, tab, node])
   useEffect(() => { setPage(1) }, [resourceKey, search, statusFilter, sort, pageSize, groupBy])
   useEffect(() => { setCollapsed(new Set()) }, [connectionId, clusterId, namespace, groupBy])
@@ -476,7 +534,7 @@ function Workbench({ openSettings }) {
   function chooseCluster(value) { setClusterId(value); setNamespace([]); setNode('') }
   function chooseNamespace(value) { setNamespace(Array.isArray(value) ? value : value ? [value] : []); setNode('') }
   const metricMap = new Map((metrics.data || []).map(item => [`${item.namespace}/${item.name}`, item]))
-  const allRows = (resources.data || []).map(row => {
+  const allRows = (tab === 'pods' ? resources.data?.items || [] : resources.data || []).map(row => {
     const usage = metricMap.get(`${row.namespace}/${row.name}`)
     // A Pod sample can include restartable init containers; only compare to
     // application-container limits when the sampled container set matches.
@@ -498,9 +556,18 @@ function Workbench({ openSettings }) {
     rows.splice(0, rows.length, ...[...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).flatMap(key => groups.get(key)))
   }
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
-  const currentPage = Math.min(page, pages)
+  const currentPage = tab === 'pods' ? activePodPaging.index + 1 : Math.min(page, pages)
   const offset = (currentPage - 1) * pageSize
-  const visibleRows = rows.slice(offset, offset + pageSize)
+  const visibleRows = tab === 'pods' ? rows : rows.slice(offset, offset + pageSize)
+  const nextPodCursor = tab === 'pods' ? resources.data?.nextCursor : null
+  const turnPage = direction => {
+    if (tab !== 'pods') return setPage(currentPage + direction)
+    setPodPaging(old => {
+      const current = old.key === podScopeKey ? old : { key: podScopeKey, index: 0, cursors: [null] }
+      if (direction < 0) return { ...current, index: Math.max(0, current.index - 1) }
+      return { ...current, index: current.index + 1, cursors: [...current.cursors.slice(0, current.index + 1), nextPodCursor] }
+    })
+  }
   useEffect(() => { if (tableRef.current) { tableRef.current.scrollTop = 0; tableRef.current.scrollLeft = 0 } }, [resourceKey, search, statusFilter, sort, currentPage, pageSize])
   const writable = connection?.allowWrites && !resources.loading && !resources.error
   const cluster = clusters.data?.find(item => item.id === clusterId)
@@ -513,16 +580,15 @@ function Workbench({ openSettings }) {
     <Button icon={Box} title={`查看 ${row.name} 的 Pods`} disabled={resources.loading} onClick={() => { setNamespace([]); setNode(row.name); setTab('pods') }} />
     <Button icon={row.unschedulable ? Unlock : Lock} title={row.unschedulable ? '解封节点' : '封锁节点'} disabled={!writable} onClick={() => manage(row.unschedulable ? 'uncordon' : 'cordon', row.unschedulable ? '解封节点' : '封锁节点', row)} />
   </div> : type === 'pods' ? <div className="rc-row">
-    <Button icon={FileText} title={`查看 ${row.name} 日志与详情`} disabled={resources.loading} onClick={() => setPod(row)} />
+    <Button icon={FileText} title={`查看 ${row.name} 日志与详情`} onClick={() => setPod(row)} />
     <Button icon={Trash2} title={`删除 ${row.name}`} className="danger" disabled={!writable} onClick={() => manage('delete-pod', '删除 Pod', row)} />
   </div> : <div className="rc-row"><Button icon={RotateCw} title={`重启 ${row.name}`} disabled={!writable} onClick={() => manage('restart-deployment', '滚动重启 Deployment', row)} /><Button icon={Scaling} title={`扩缩容 ${row.name}`} disabled={!writable} onClick={() => manage('scale-deployment', '扩缩容 Deployment', row)} /></div>
   const columns = tab === 'nodes' ? [['节点', 'name'], ['状态', 'ready'], ['调度', 'unschedulable'], ['CPU 用量', 'cpuUsage'], ['内存用量', 'memoryUsage'], ['可分配 CPU / 内存'], ['角色'], ['Internal IP', 'ip'], ['版本', 'version'], ['操作']]
     : tab === 'pods' ? [['Pod', 'name'], ['命名空间', 'namespace'], ['状态', 'status'], ['就绪', 'ready'], ['重启', 'restarts'], ['CPU 用量', 'cpuUsage'], ['内存用量', 'memoryUsage'], ['容器请求 CPU / 内存'], ['QoS', 'qosClass'], ['节点', 'node'], ['Pod IP', 'ip'], ['存活时间', 'createdAt'], ['操作']]
-    : tab === 'namespaces' ? [['命名空间', 'name'], ['状态', 'status'], ['Rancher 项目', 'project'], ['标签'], ['存活时间', 'createdAt'], ['资源']]
     : tab === 'deployments' ? [['Deployment', 'name'], ['命名空间', 'namespace'], ['就绪 / 目标', 'ready'], ['可用', 'available'], ['镜像'], ['操作']]
     : tab === 'services' ? [['服务', 'name'], ['命名空间', 'namespace'], ['类型', 'type'], ['Cluster IP', 'clusterIP'], ['端口'], ['外部地址']] : [['级别', 'type'], ['资源', 'object'], ['原因', 'reason'], ['事件'], ['次数', 'count'], ['最近发生', 'lastTimestamp']]
   return <>
-    <header className="rc-heading"><div className="rc-brand"><Server /><h2>Rancher 工作台</h2><div className="rc-heading-meta"><span>{list.length} 个连接</span></div></div><div className="rc-row"><span className="rc-heading-meta">{connection && <><ShieldCheck />{connection.allowWrites ? '管理已启用' : '只读连接'}</>}</span><Button icon={Settings2} className="ghost" onClick={openSettings}>连接设置</Button></div></header>
+    <header className="rc-heading"><div className="rc-brand"><RancherIcon /><h2>Rancher 工作台</h2><div className="rc-heading-meta"><span>{list.length} 个连接</span></div></div><div className="rc-row"><span className="rc-heading-meta">{connection && <><ShieldCheck />{connection.allowWrites ? '管理已启用' : '只读连接'}</>}</span><Button icon={Settings2} className="ghost" onClick={openSettings}>连接设置</Button></div></header>
     <ErrorMessage error={connections.error} retry={connections.reload} />
     <ErrorMessage error={clusters.error} retry={clusters.reload} />
     <div className="rc-scope"><Field label="Rancher 连接"><Select label="Rancher 连接" value={connectionId} onChange={chooseConnection} items={[{ value: '', label: '选择连接', disabled: true }, ...list.map(item => ({ value: item.id, label: `${item.name}${item.allowWrites ? '' : ' · 只读'}` }))]} /></Field>
@@ -531,30 +597,32 @@ function Workbench({ openSettings }) {
     {connection && <div className="rc-context"><span className="rc-connection-address" title={connection.url}>{connection.url}</span>{cluster?.version && <span>{cluster.version}</span>}{namespaces.data && <span>{namespaces.data.length} 个命名空间</span>}<span role="status" title={clusters.error || `可访问 ${clusters.data?.length || 0} 个集群`}><State good={!!clusters.data && !clusters.loading && !clusters.error} bad={!!clusters.error}>{clusters.loading ? '连接中…' : clusters.error ? '连接失败' : clusters.data ? `已连接 ${connection.name}` : '等待连接'}</State></span></div>}
     <Tabs id={tabsId} label="资源类型" items={TABS} value={tab} onChange={setTab} />
     <section className="rc-resources" role="tabpanel" id={`${tabsId}-${tab}-panel`} aria-labelledby={`${tabsId}-${tab}`}>
-      {tab !== 'namespaces' && <ErrorMessage error={namespaces.error} retry={namespaces.reload} />}
+      <ErrorMessage error={namespaces.error} retry={namespaces.reload} />
       {!connection ? <Empty>请先添加 Rancher 连接<Button icon={Plus} onClick={openSettings}>配置连接</Button></Empty> : !clusterId ? <Empty>{clusters.loading ? '正在加载集群…' : clusters.error ? '集群加载失败，请查看上方错误并重试' : '没有可访问的集群'}</Empty> : <>
-        <div className="rc-toolbar"><div className="rc-resource-title"><h3>{resourceLabel}</h3><span>{allRows.length} 项</span></div><div className="rc-search"><Input icon={<Search size={15} />} className="rc-input" aria-label="筛选资源" placeholder="搜索名称、命名空间、IP…" value={search} onChange={e => setSearch(e.target.value)} />{search && <Button icon={X} className="ghost" title="清除搜索" onClick={() => setSearch('')} />}</div>
+        <div className="rc-toolbar"><div className="rc-resource-title"><h3>{resourceLabel}</h3><span>{tab === 'pods' ? `第 ${currentPage} 页 · ${allRows.length} 项` : `${allRows.length} 项`}</span></div><div className="rc-search"><Input icon={<Search size={15} />} className="rc-input" aria-label="筛选资源" placeholder={tab === 'pods' ? '筛选本页名称、命名空间、IP…' : '搜索名称、命名空间、IP…'} value={search} onChange={e => setSearch(e.target.value)} />{search && <Button icon={X} className="ghost" title="清除搜索" onClick={() => setSearch('')} />}</div>
           <Select className="rc-status-filter" label="资源状态筛选" value={statusFilter} onChange={setStatusFilter} items={[{ value: '', label: tab === 'services' ? '全部服务类型' : '全部状态' }, ...(tab === 'services' ? [...new Set(allRows.map(row => row.type))].sort().map(type => ({ value: type, label: type })) : [{ value: 'healthy', label: tab === 'events' ? 'Normal' : '正常' }, { value: 'attention', label: tab === 'events' ? 'Warning' : '待关注' }])]} />
-          {tab === 'pods' && <><Select label="Pod 分组" value={groupBy} onChange={setGroupBy} items={[{ value: '', label: '平铺列表' }, { value: 'namespace', label: '按命名空间分组' }, { value: 'node', label: '按节点分组' }]} />{grouped && <Button title={collapsed.size ? '展开全部分组' : '折叠全部分组'} icon={collapsed.size ? ChevronDown : ChevronRight} onClick={() => setCollapsed(collapsed.size ? new Set() : new Set(groups.keys()))} />}</>}
+          {tab === 'pods' && <><SegmentedTabs label="Pod 布局" className="rc-layout-tabs" value={groupBy} onChange={setGroupBy}
+            items={[['', '平铺列表', Rows3], ['namespace', '按命名空间分组', Layers], ['node', '按节点分组', Network]].map(([value, label, Icon]) => ({ value, id: `${tabsId}-layout-${value || 'flat'}`, panelId: `${tabsId}-layout-${value || 'flat'}-panel`, label: <span className="rc-tab-label" title={label}><Icon size={14} aria-hidden="true" /><span className="rc-sr-only">{label}</span></span> }))} />{grouped && <Button title={collapsed.size ? '展开全部分组' : '折叠全部分组'} icon={collapsed.size ? ChevronDown : ChevronRight} onClick={() => setCollapsed(collapsed.size ? new Set() : new Set(groups.keys()))} />}</>}
           {tab === 'pods' && node && <Button icon={X} title="清除节点筛选" onClick={() => setNode('')}>{node}</Button>}<div className="rc-refresh-control"><Checkbox className="rc-check" label="15 秒刷新" checked={auto} onChange={setAuto} /><Button icon={RefreshCw} className={`ghost ${resources.loading ? 'rc-spin' : ''}`} title="刷新资源" onClick={refresh} disabled={resources.loading} /></div></div>
-        {notice && <p className="rc-success" role="status">{notice}</p>}<ErrorMessage error={resources.error} retry={resources.reload} />
-        <div className="rc-summary"><span>共 <strong>{allRows.length}</strong> 项</span>{tab !== 'services' && <><span className="rc-summary-ok"><strong>{goodCount}</strong>{tab === 'nodes' ? '健康' : tab === 'events' ? 'Normal' : '正常'}</span><span className={allRows.length > goodCount ? 'rc-summary-alert' : ''}><strong>{allRows.length - goodCount}</strong>{tab === 'events' ? 'Warning' : '待关注'}</span></>}{tab === 'nodes' && <span><strong>{allRows.filter(row => row.unschedulable).length}</strong>已封锁</span>}{tab === 'pods' && <span>累计重启 <strong>{allRows.reduce((sum, row) => sum + row.restarts, 0)}</strong></span>}{tab === 'services' && <span><strong>{allRows.filter(row => row.type !== 'ClusterIP').length}</strong>对外服务</span>}<span className="rc-spacer" />{(search || statusFilter) && <span>匹配 <strong>{rows.length}</strong> 项</span>}</div>
-        {resources.loading && resources.data === null ? <LoadingRows /> : rows.length ? <div ref={tableRef} className={`rc-table-wrap ${resources.loading ? 'rc-loading' : ''}`} aria-busy={resources.loading}><table className={`rc-table ${['nodes', 'pods', 'deployments'].includes(tab) ? 'has-actions' : ''}`}><thead><tr>{columns.map(([label, key]) => <th key={label} aria-sort={key && sort.key === key ? sort.descending ? 'descending' : 'ascending' : undefined}>{key ? <Button className="ghost rc-sort" aria-label={`按${label}排序`} aria-pressed={sort.key === key} onClick={() => setSort({ key, descending: sort.key === key && !sort.descending })}>{label}{sort.key === key ? sort.descending ? <ArrowDown /> : <ArrowUp /> : <ArrowUpDown size={12} />}</Button> : label}</th>)}</tr></thead><tbody>{visibleRows.map((row, index) => <React.Fragment key={idOf(row)}>
-          {grouped && (index === 0 || groupKey(visibleRows[index - 1]) !== groupKey(row)) && <tr className="rc-group-row"><td colSpan={columns.length}><div className="rc-group-content"><Button className="ghost rc-group-toggle" icon={collapsed.has(groupKey(row)) ? ChevronRight : ChevronDown} aria-expanded={!collapsed.has(groupKey(row))} title={`分组 ${groupKey(row)}`} onClick={() => setCollapsed(current => { const next = new Set(current); next.has(groupKey(row)) ? next.delete(groupKey(row)) : next.add(groupKey(row)); return next })}>{groupKey(row)}</Button><Tag tone="quiet">{groups.get(groupKey(row)).length} Pods</Tag><span className="rc-muted">{groups.get(groupKey(row)).filter(item => !healthy(item, 'pods')).length} 待关注</span><span className="rc-muted">CPU {cpuUsage(groups.get(groupKey(row)).some(item => item.cpuUsage != null) ? groups.get(groupKey(row)).reduce((sum, item) => sum + (item.cpuUsage || 0), 0) : null)} · 内存 {memUsage(groups.get(groupKey(row)).some(item => item.memoryUsage != null) ? groups.get(groupKey(row)).reduce((sum, item) => sum + (item.memoryUsage || 0), 0) : null)}（已有采样）</span><span className="rc-muted">本页 {visibleRows.filter(item => groupKey(item) === groupKey(row)).length} 项</span></div></td></tr>}
+        {notice && <p className={notice.done ? 'rc-success' : 'rc-muted'} role="status">{notice.message}</p>}<ErrorMessage error={resources.error} retry={resources.reload} />
+        <div className="rc-summary"><span>{tab === 'pods' ? '本页' : '共'} <strong>{allRows.length}</strong> 项</span>{tab !== 'services' && <><span className="rc-summary-ok"><strong>{goodCount}</strong>{tab === 'nodes' ? '健康' : tab === 'events' ? 'Normal' : '正常'}</span><span className={allRows.length > goodCount ? 'rc-summary-alert' : ''}><strong>{allRows.length - goodCount}</strong>{tab === 'events' ? 'Warning' : '待关注'}</span></>}{tab === 'nodes' && <span><strong>{allRows.filter(row => row.unschedulable).length}</strong>已封锁</span>}{tab === 'pods' && <span>本页重启 <strong>{allRows.reduce((sum, row) => sum + row.restarts, 0)}</strong></span>}{tab === 'services' && <span><strong>{allRows.filter(row => row.type !== 'ClusterIP').length}</strong>对外服务</span>}<span className="rc-spacer" />{(search || statusFilter) && <span>{tab === 'pods' ? '本页匹配' : '匹配'} <strong>{rows.length}</strong> 项</span>}</div>
+        <div className="rc-resource-body" {...(tab === 'pods' ? { role: 'tabpanel', id: `${tabsId}-layout-${groupBy || 'flat'}-panel`, 'aria-labelledby': `${tabsId}-layout-${groupBy || 'flat'}` } : {})}>
+        {resources.loading && resources.data === null ? <LoadingRows /> : rows.length ? <div ref={tableRef} className={`rc-table-wrap ${resources.loading && tab !== 'pods' ? 'rc-loading' : ''}`} aria-busy={resources.loading}><table className={`rc-table ${['nodes', 'pods', 'deployments'].includes(tab) ? 'has-actions' : ''}`}><thead><tr>{columns.map(([label, key]) => <th key={label} aria-sort={key && sort.key === key ? sort.descending ? 'descending' : 'ascending' : undefined}>{key ? <Button className="ghost rc-sort" aria-label={`按${label}排序`} aria-pressed={sort.key === key} onClick={() => setSort({ key, descending: sort.key === key && !sort.descending })}>{label}{sort.key === key ? sort.descending ? <ArrowDown /> : <ArrowUp /> : <ArrowUpDown size={12} />}</Button> : label}</th>)}</tr></thead><tbody>{visibleRows.map((row, index) => <React.Fragment key={idOf(row)}>
+          {grouped && (index === 0 || groupKey(visibleRows[index - 1]) !== groupKey(row)) && <tr className="rc-group-row"><td colSpan={columns.length}><div className="rc-group-content"><Button className="ghost rc-group-toggle" icon={collapsed.has(groupKey(row)) ? ChevronRight : ChevronDown} aria-expanded={!collapsed.has(groupKey(row))} title={`分组 ${groupKey(row)}`} onClick={() => setCollapsed(current => { const next = new Set(current); next.has(groupKey(row)) ? next.delete(groupKey(row)) : next.add(groupKey(row)); return next })}>{groupKey(row)}</Button><Tag tone="quiet">{groups.get(groupKey(row)).length} Pods · 本页</Tag><span className="rc-muted">{groups.get(groupKey(row)).filter(item => !healthy(item, 'pods')).length} 待关注</span><span className="rc-muted">CPU {cpuUsage(groups.get(groupKey(row)).some(item => item.cpuUsage != null) ? groups.get(groupKey(row)).reduce((sum, item) => sum + (item.cpuUsage || 0), 0) : null)} · 内存 {memUsage(groups.get(groupKey(row)).some(item => item.memoryUsage != null) ? groups.get(groupKey(row)).reduce((sum, item) => sum + (item.memoryUsage || 0), 0) : null)}（已有采样）</span><span className="rc-muted">当前显示 {visibleRows.filter(item => groupKey(item) === groupKey(row)).length} 项</span></div></td></tr>}
           {(!grouped || !collapsed.has(groupKey(row))) && <tr className={grouped ? 'rc-tree-child' : ''}>
           {tab === 'nodes' && <><td className="name" title={`${row.name}\n${row.os} · ${row.architecture}\n${row.runtime} · Pod 容量 ${row.podCapacity ?? '—'}`}>{row.name}</td><td><State good={healthy(row, tab)} bad={!healthy(row, tab)}>{row.ready ? 'Ready' : 'NotReady'}</State>{row.pressure?.length > 0 && <span className="rc-warning" title={row.pressure.join(', ')}> · 资源压力</span>}</td><td>{row.unschedulable ? <State>已封锁</State> : <span className="rc-muted">可调度</span>}</td><td><ResourceUsage kind="cpu" value={row.cpuUsage} total={row.allocatable?.cpuCores} stale={!!metrics.error} title={`采样 ${date(row.usage?.timestamp)} · 窗口 ${row.usage?.window || '—'}`} /></td><td><ResourceUsage kind="memory" value={row.memoryUsage} total={row.allocatable?.memoryBytes} stale={!!metrics.error} title={`采样 ${date(row.usage?.timestamp)} · 窗口 ${row.usage?.window || '—'}`} /></td><td title={`CPU: ${row.cpu} · 内存: ${row.memory}`}><strong>{cpu(quantity(row.cpu))}</strong><span className="rc-muted"> 核 / </span>{memory(row.memory)}</td><td><div className="rc-row">{(row.roles.length ? row.roles : ['worker']).map(role => <Tag tone="neutral" key={role}>{role}</Tag>)}</div></td><td className="rc-mono">{row.ip || '—'}</td><td className="rc-mono">{row.version}</td><td>{buttons(row, tab)}</td></>}
           {tab === 'pods' && <><td className="name" title={row.name}><Button className="ghost rc-link" onClick={() => setPod(row)}>{row.name}</Button></td><td><Button className="ghost rc-link" title={`筛选命名空间 ${row.namespace}`} onClick={() => chooseNamespace(row.namespace)}><Tag tone="neutral">{row.namespace}</Tag></Button></td><td><State good={healthy(row, tab)} bad={!healthy(row, tab)}>{row.status}</State></td><td>{row.ready}/{row.containers}</td><td className={row.restarts > 0 ? 'rc-warning' : 'rc-muted'}>{row.restarts}</td><td><ResourceUsage kind="cpu" value={row.cpuUsage} total={row.resources?.limits.cpuCores} stale={!!metrics.error} title={`容器上限合计 ${cpuUsage(row.resources?.limits.cpuCores)} · 采样 ${date(row.usage?.timestamp)}`} /></td><td><ResourceUsage kind="memory" value={row.memoryUsage} total={row.resources?.limits.memoryBytes} stale={!!metrics.error} title={`容器上限合计 ${memUsage(row.resources?.limits.memoryBytes)} · 采样 ${date(row.usage?.timestamp)}`} /></td><td className="rc-mono" title="普通容器请求合计；未完整配置时显示 —，初始化容器见详情">{cpuUsage(row.resources?.requests.cpuCores)} / {memUsage(row.resources?.requests.memoryBytes)}</td><td><Tag tone="quiet">{row.qosClass || '—'}</Tag></td><td>{row.node || '—'}</td><td className="rc-mono">{row.ip || '—'}</td><td title={date(row.createdAt)} className="rc-muted">{age(row.createdAt)}</td><td>{buttons(row, tab)}</td></>}
-          {tab === 'namespaces' && <><td className="name">{row.name}</td><td><State good={healthy(row, tab)} bad={!healthy(row, tab)}>{row.status}</State></td><td className="rc-mono">{row.project || '—'}</td><td><span className="rc-ellipsis" title={Object.entries(row.labels || {}).map(([key, value]) => `${key}=${value}`).join('\n')}>{Object.entries(row.labels || {}).map(([key, value]) => `${key}=${value}`).join(' · ') || '—'}</span></td><td title={date(row.createdAt)}>{age(row.createdAt)}</td><td><Button icon={Box} onClick={() => { chooseNamespace(row.name); setTab('pods') }}>查看 Pods</Button></td></>}
           {tab === 'deployments' && <><td className="name" title={row.name}>{row.name}</td><td><Tag tone="neutral">{row.namespace}</Tag></td><td><State good={healthy(row, tab)} bad={!healthy(row, tab)}>{row.ready} / {row.replicas}</State></td><td>{row.available}</td><td><span className="rc-ellipsis rc-mono" title={row.images.join(', ')}>{row.images.join(', ')}</span></td><td>{buttons(row, tab)}</td></>}
           {tab === 'services' && <><td className="name">{row.name}</td><td><Tag tone="neutral">{row.namespace}</Tag></td><td><Tag tone="neutral">{row.type}</Tag></td><td className="rc-mono">{row.clusterIP}</td><td className="rc-mono">{row.ports.map(port => `${port.port} → ${port.targetPort}/${port.protocol}${port.nodePort ? ` · ${port.nodePort}` : ''}`).join(', ')}</td><td className="rc-mono">{row.externalIPs?.map(item => item.ip || item.hostname).join(', ') || '—'}</td></>}
           {tab === 'events' && <><td><State bad={row.type === 'Warning'}>{row.type}</State></td><td>{row.object}<div className="rc-muted">{row.namespace}</div></td><td>{row.reason}</td><td className="rc-message">{row.message}</td><td>{row.count}</td><td>{date(row.lastTimestamp)}</td></>}
         </tr>}</React.Fragment>)}</tbody></table></div> : <Empty>{resources.error ? '资源读取失败，请重试' : search || statusFilter ? '没有匹配的资源' : '此范围下暂无资源'}</Empty>}
+        </div>
         <footer className="rc-footer"><span>{resources.at ? `更新于 ${resources.at.toLocaleTimeString()}` : '尚未更新'}{resources.loading ? ' · 刷新中…' : ''}</span>
           {hasMetrics && <div className="rc-metrics-status" role="status"><Activity size={12} /><span title={metrics.error || `最早采样 ${date(metrics.data?.map(item => item.timestamp).filter(Boolean).sort()[0])}`}>{metrics.error ? `指标暂不可用${metrics.data ? '（保留上次采样）' : '，用量显示 —'}：${metrics.error}` : metrics.loading ? '正在读取 CPU / 内存指标…' : `已采样 ${allRows.filter(row => row.usage).length} / ${allRows.length} 项 · 最早采样 ${date(metrics.data?.map(item => item.timestamp).filter(Boolean).sort()[0])}`}</span>{metrics.error && <Button icon={RefreshCw} title="重试资源指标" onClick={metrics.reload} disabled={metrics.loading} />}<span className="rc-muted">{tab === 'nodes' ? '% / 可分配' : '% / 容器上限'}</span></div>}
-          <div className="rc-pagination"><Select label="每页条数" value={pageSize} onChange={value => setPageSize(Number(value))} items={[25, 50, 100].map(size => ({ value: size, label: `${size} / 页` }))} /><span className="rc-page-range" aria-live="polite">{rows.length ? `${offset + 1}–${Math.min(offset + pageSize, rows.length)}` : '0'} / {rows.length}</span><Button icon={ChevronLeft} className="ghost" title="上一页" disabled={currentPage <= 1 || resources.loading} onClick={() => setPage(currentPage - 1)} /><span>{currentPage} / {pages}</span><Button icon={ChevronRight} className="ghost" title="下一页" disabled={currentPage >= pages || resources.loading} onClick={() => setPage(currentPage + 1)} /></div></footer>
+          <div className="rc-pagination"><Select label="每页条数" value={pageSize} onChange={value => setPageSize(Number(value))} items={[25, 50, 100].map(size => ({ value: size, label: `${size} / 页` }))} /><span className="rc-page-range" aria-live="polite">{tab === 'pods' ? `${allRows.length} 项 / 本页` : `${rows.length ? `${offset + 1}–${Math.min(offset + pageSize, rows.length)}` : '0'} / ${rows.length}`}</span><Button icon={ChevronLeft} className="ghost" title="上一页" disabled={currentPage <= 1 || resources.loading} onClick={() => turnPage(-1)} /><span>{tab === 'pods' ? `第 ${currentPage} 页` : `${currentPage} / ${pages}`}</span><Button icon={ChevronRight} className="ghost" title="下一页" disabled={resources.loading || (tab === 'pods' ? !nextPodCursor : currentPage >= pages)} onClick={() => turnPage(1)} /></div></footer>
       </>}
     </section>
-    {action && <ActionDialog action={action} scope={action.scope} close={() => setAction(null)} completed={() => { setNotice('请求已提交，状态以集群回读为准。'); resources.reload() }} />}
+    {action && <ActionDialog action={action} scope={action.scope} close={() => setAction(null)} completed={(message, done = false) => { setNotice({ message, done }); resources.reload() }} />}
     {pod && <PodDialog pod={pod} scope={scope} context={`${connection?.name} · ${clusterName}`} close={() => setPod(null)} />}
     {nodeDetail && <NodeDialog node={allRows.find(item => item.name === nodeDetail.name) || nodeDetail} close={() => setNodeDetail(null)} />}
   </>

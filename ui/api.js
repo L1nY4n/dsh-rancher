@@ -7,12 +7,13 @@ export async function api(path, { body, signal, method = body === undefined ? 'G
 }
 
 export const run = (input, signal) => api('/run', { body: input, signal })
+export const pagePods = (input, signal) => api('/pods/page', { body: input, signal })
 
-export async function streamLogs(input, signal, consume) {
-  const response = await fetch('/api/rancher/logs/stream', { method: 'POST', signal, credentials: 'same-origin', redirect: 'error',
+async function readStream(path, input, signal, consume, label) {
+  const response = await fetch(`/api/rancher/${path}`, { method: 'POST', signal, credentials: 'same-origin', redirect: 'error',
     headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) })
   if (!response.ok) { const payload = await response.json(); throw new Error(payload.error || `HTTP ${response.status}`) }
-  if (!response.body) throw new Error('当前环境不支持流式日志')
+  if (!response.body) throw new Error(`当前环境不支持流式${label}`)
   const reader = response.body.getReader(), decoder = new TextDecoder()
   let pending = '', ended = false
   try {
@@ -30,6 +31,19 @@ export async function streamLogs(input, signal, consume) {
       }
       if (done) break
     }
-    if (!ended) throw new Error('日志连接中断，请重连')
+    if (!ended) throw new Error(`${label}连接中断，请重试`)
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+}
+
+export const streamLogs = (input, signal, consume) => readStream('logs/stream', input, signal, consume, '日志')
+
+export async function streamPods(input, signal, publish) {
+  const rows = []
+  await readStream('pods/stream', input, signal, event => {
+    if (event.type === 'page') {
+      rows.push(...event.items)
+      publish([...rows])
+    }
+  }, 'Pod 列表')
+  return rows
 }

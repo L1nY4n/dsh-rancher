@@ -1,5 +1,5 @@
 import { RancherClient, segment } from './client.js'
-import { check } from './errors.js'
+import { ApiError, check } from './errors.js'
 import { quantity, usageView, sumUsage, containerResources } from './resources.js'
 
 export const READ_OPERATIONS = ['clusters', 'namespaces', 'nodes', 'pods', 'node-metrics', 'pod-metrics', 'pod', 'logs', 'deployments', 'services', 'events']
@@ -68,7 +68,7 @@ export class RancherManager {
     }
     const k8s = resource => client.k8s(clusterId, resource)
     const nsPath = prefix => `${prefix}/${namespace ? `namespaces/${segment(namespace, '命名空间')}/` : ''}`
-    const list = (resource, query) => client.list(k8s(resource), query, signal)
+    const list = (resource, query, options) => client.list(k8s(resource), query, signal, options)
     const request = (resource, opts) => client.request(k8s(resource), { ...opts, signal })
     if (operation === 'namespaces') return (await list('api/v1/namespaces')).map(item => ({ ...meta(item), status: item.status?.phase,
       project: item.metadata?.annotations?.['field.cattle.io/projectId'] || item.metadata?.labels?.['field.cattle.io/projectId'] || '', labels: item.metadata?.labels || {} })).sort((a, b) => a.name.localeCompare(b.name))
@@ -85,9 +85,9 @@ export class RancherManager {
       os: item.status?.nodeInfo?.osImage || '', architecture: item.status?.nodeInfo?.architecture || '', runtime: item.status?.nodeInfo?.containerRuntimeVersion || '',
       pressure: (item.status?.conditions || []).filter(condition => condition.type.endsWith('Pressure') && condition.status === 'True').map(condition => condition.type),
       conditions: (item.status?.conditions || []).map(({ type, status, reason }) => ({ type, status, reason })) }))
-    if (operation === 'pods') return (await list(`${nsPath('api/v1')}pods`, { labelSelector: input.labelSelector, fieldSelector: input.node ? `spec.nodeName=${segment(input.node, '节点')}` : undefined })).map(podView)
+    if (operation === 'pods') return (await list(`${nsPath('api/v1')}pods`, { labelSelector: input.labelSelector, fieldSelector: input.node ? `spec.nodeName=${segment(input.node, '节点')}` : undefined }, { pageSize: 100, timeoutMs: 30_000 })).map(podView)
     if (operation === 'deployments') return (await list(`${nsPath('apis/apps/v1')}deployments`)).map(item => ({ ...meta(item),
-      ready: item.status?.readyReplicas || 0, replicas: item.spec?.replicas ?? 1, available: item.status?.availableReplicas || 0,
+      ready: item.status?.readyReplicas || 0, replicas: item.spec?.replicas ?? 1, current: item.status?.replicas || 0, available: item.status?.availableReplicas || 0, updated: item.status?.updatedReplicas || 0,
       images: (item.spec?.template?.spec?.containers || []).map(container => container.image), generation: item.metadata?.generation,
       observedGeneration: item.status?.observedGeneration }))
     if (operation === 'services') return (await list(`${nsPath('api/v1')}services`)).map(item => ({ ...meta(item),
@@ -124,13 +124,91 @@ export class RancherManager {
       return { accepted: true, operation, name, message: '删除请求已提交；由控制器管理的 Pod 将按副本策略重建。' }
     }
     const deployment = `${nsPath('apis/apps/v1')}deployments/${segment(name)}`
+    let updated
     if (operation === 'restart-deployment') {
-      await request(deployment, { method: 'PATCH', contentType: 'application/merge-patch+json', body: { spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } } } })
+      updated = await request(deployment, { method: 'PATCH', contentType: 'application/merge-patch+json', body: { spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } } } })
     } else if (operation === 'scale-deployment') {
       check(Number.isInteger(input.replicas) && input.replicas >= 0 && input.replicas <= 10000, '副本数必须为 0–10000 的整数')
-      await request(`${deployment}/scale`, { method: 'PATCH', contentType: 'application/merge-patch+json', body: { spec: { replicas: input.replicas } } })
+      updated = await request(`${deployment}/scale`, { method: 'PATCH', contentType: 'application/merge-patch+json', body: { spec: { replicas: input.replicas } } })
     }
-    return { accepted: true, operation, name, message: '请求已提交，请刷新查看就绪状态。' }
+    return { accepted: true, operation, name, generation: updated?.metadata?.generation ?? null, message: '请求已提交，请刷新查看就绪状态。' }
+  }
+
+  async streamPods(input, signal, consume) {
+    check(input && typeof input === 'object' && !Array.isArray(input), '请求必须是对象')
+    const { connectionId, clusterId, namespace, namespaces } = input
+    if (namespaces !== undefined) {
+      check(Array.isArray(namespaces) && namespaces.length <= 100, '命名空间必须为最多 100 项的数组')
+      check(!namespace, '不能同时指定 namespace 和 namespaces')
+      namespaces.forEach(value => segment(value, '命名空间'))
+    }
+    const scopes = namespaces?.length ? [...new Set(namespaces)] : [namespace ? segment(namespace, '命名空间') : undefined]
+    const connection = this.store.get(connectionId)
+    const controller = new AbortController()
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    const query = { labelSelector: input.labelSelector, fieldSelector: input.node ? `spec.nodeName=${segment(input.node, '节点')}` : undefined }
+    const readScope = async scopedNamespace => {
+      const client = new RancherClient(connection)
+      const resource = `api/v1/${scopedNamespace ? `namespaces/${scopedNamespace}/` : ''}pods`
+      for await (const items of client.listPages(client.k8s(clusterId, resource), query, combined, { pageSize: 100, timeoutMs: 30_000 })) {
+        combined.throwIfAborted()
+        await consume({ type: 'page', items: items.map(podView) })
+      }
+    }
+    try {
+      for (let start = 0; start < scopes.length; start += 5) {
+        combined.throwIfAborted()
+        await Promise.all(scopes.slice(start, start + 5).map(readScope))
+      }
+    } catch (error) {
+      controller.abort()
+      throw error
+    }
+  }
+
+  async pagePods(input, signal) {
+    check(input && typeof input === 'object' && !Array.isArray(input), '请求必须是对象')
+    const { connectionId, clusterId, namespace, namespaces, cursor, pageSize = 50 } = input
+    check(Number.isInteger(pageSize) && pageSize >= 1 && pageSize <= 100, '每页条数必须为 1–100')
+    check(!namespace || !namespaces, '不能同时指定 namespace 和 namespaces')
+    if (namespaces !== undefined) check(Array.isArray(namespaces) && namespaces.length <= 100, '命名空间必须为最多 100 项的数组')
+    const scopes = namespaces?.length ? [...new Set(namespaces.map(value => segment(value, '命名空间')))] : [namespace ? segment(namespace, '命名空间') : undefined]
+    check(cursor == null || (typeof cursor === 'object' && !Array.isArray(cursor)
+      && Number.isInteger(cursor.index) && cursor.index >= 0 && cursor.index < scopes.length
+      && typeof cursor.token === 'string' && cursor.token.length <= 8192), '分页游标无效')
+    const client = new RancherClient(this.store.get(connectionId))
+    const query = { labelSelector: input.labelSelector, fieldSelector: input.node ? `spec.nodeName=${segment(input.node, '节点')}` : undefined }
+    const endpoint = index => client.k8s(clusterId, `api/v1/${scopes[index] ? `namespaces/${scopes[index]}/` : ''}pods`)
+    const items = []
+    let index = cursor?.index || 0, token = cursor?.token || ''
+    const visited = new Set()
+    while (index < scopes.length && items.length < pageSize) {
+      signal?.throwIfAborted()
+      check(visited.size < 1000, 'Pod 分页超过安全上限，请缩小命名空间范围', 502)
+      check(!visited.has(`${index}:${token}`), 'Kubernetes 返回重复分页游标', 502)
+      visited.add(`${index}:${token}`)
+      let page
+      try { page = await client.listPage(endpoint(index), query, signal, { pageSize: pageSize - items.length, cursor: token }) }
+      catch (error) { if (error.status === 410) throw new ApiError(410, '分页游标已过期，请刷新 Pod 列表从第一页重试'); throw error }
+      items.push(...page.items.map(podView))
+      if (page.next) token = page.next
+      else { index++; token = '' }
+    }
+    // A full page at a namespace boundary needs a small probe so an empty
+    // remaining scope cannot produce a phantom "next" page.
+    if (items.length === pageSize && !token) {
+      while (index < scopes.length) {
+        signal?.throwIfAborted()
+        check(visited.size < 1000, 'Pod 分页超过安全上限，请缩小命名空间范围', 502)
+        check(!visited.has(`${index}:${token}`), 'Kubernetes 返回重复分页游标', 502)
+        visited.add(`${index}:${token}`)
+        const probe = await client.listPage(endpoint(index), query, signal, { pageSize: 1, cursor: token })
+        if (probe.items.length) break
+        if (probe.next) token = probe.next
+        else { index++; token = '' }
+      }
+    }
+    return { items, nextCursor: index < scopes.length ? { index, token } : null }
   }
 
   async streamLogs(input, signal, consume) {

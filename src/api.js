@@ -70,6 +70,19 @@ export function createApi({ store, manager, getConnection = () => undefined }) {
         })
         return res.end()
       }
+      if (req.method === 'POST' && route === '/pods/stream') {
+        const input = await readBody(req)
+        await manager.streamPods(input, abort.signal, async event => {
+          abort.signal.throwIfAborted()
+          if (!res.headersSent) {
+            res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no', 'x-content-type-options': 'nosniff' })
+            res.flushHeaders()
+          }
+          if (!res.write(JSON.stringify(event) + '\n')) await once(res, 'drain', { signal: abort.signal })
+        })
+        return res.end(JSON.stringify({ type: 'end' }) + '\n')
+      }
+      if (req.method === 'POST' && route === '/pods/page') return send(200, { data: await manager.pagePods(await readBody(req), abort.signal) })
       if (req.method === 'POST' && route === '/run') return send(200, { data: await manager.run(await readBody(req), abort.signal) })
       return send(404, { error: '接口不存在' })
     } catch (error) {

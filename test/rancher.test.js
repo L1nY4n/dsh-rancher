@@ -94,6 +94,125 @@ test('multiple namespaces union resource and metric lists, deduplicate and rejec
   assert.equal(state.calls.length, before, 'Invalid multi scopes must fail before network access')
 })
 
+test('Pod reads use small Kubernetes pages and retain the complete result', async t => {
+  const pods = Array.from({ length: 205 }, (_, index) => ({ metadata: { name: `pod-${index}`, namespace: 'production', uid: `uid-${index}` }, spec: { containers: [{ name: 'main' }] }, status: { phase: 'Running' } }))
+  const { run, state } = await setup(t, { handler: ({ url, send }) => {
+    if (!url.pathname.endsWith('/api/v1/pods')) return false
+    const start = Number(url.searchParams.get('continue') || 0)
+    const limit = Number(url.searchParams.get('limit'))
+    send(200, { items: pods.slice(start, start + limit), metadata: { continue: start + limit < pods.length ? String(start + limit) : '' } })
+    return true
+  } })
+  const result = await run({ operation: 'pods' })
+  assert.equal(result.length, 205)
+  assert.deepEqual(state.calls.filter(call => call.path.endsWith('/api/v1/pods')).map(call => [call.query.limit, call.query.continue]), [['100', undefined], ['100', '100'], ['100', '200']])
+})
+
+test('Pod page endpoint requests only the selected Kubernetes chunk and preserves cursor history', async t => {
+  const pods = Array.from({ length: 125 }, (_, index) => ({ metadata: { name: `pod-${index}`, namespace: 'production', uid: `uid-${index}` }, spec: { containers: [{ name: 'main', env: [{ name: 'SECRET', value: 'must-not-leak' }] }] }, status: { phase: 'Running' } }))
+  const { store, manager, scope, state } = await setup(t, { handler: ({ url, send }) => {
+    if (!url.pathname.endsWith('/api/v1/pods')) return false
+    const start = Number(url.searchParams.get('continue') || 0), limit = Number(url.searchParams.get('limit'))
+    send(200, { items: pods.slice(start, start + limit), metadata: { continue: start + limit < pods.length ? String(start + limit) : '' } })
+    return true
+  } })
+  const server = http.createServer(createApi({ store, manager }))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.close(); server.closeAllConnections() })
+  const read = async cursor => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/rancher/pods/page`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...scope, pageSize: 50, cursor }) })
+    assert.equal(response.status, 200)
+    return (await response.json()).data
+  }
+  const first = await read(null)
+  assert.equal(first.items.length, 50)
+  assert.equal(JSON.stringify(first).includes('must-not-leak'), false)
+  assert.deepEqual(state.calls.map(call => [call.query.limit, call.query.continue]), [['50', undefined]])
+  const second = await read(first.nextCursor)
+  const third = await read(second.nextCursor)
+  assert.equal(second.items[0].name, 'pod-50')
+  assert.equal(third.items.length, 25)
+  assert.equal(third.nextCursor, null)
+  assert.deepEqual(state.calls.map(call => [call.query.limit, call.query.continue]), [['50', undefined], ['50', '50'], ['50', '100']])
+  assert.equal((await read(null)).items[0].name, 'pod-0')
+})
+
+test('Pod pages fill across selected namespaces without a phantom empty page', async t => {
+  const { manager, scope, state } = await setup(t, { handler: ({ url, send }) => {
+    if (!url.pathname.endsWith('/pods')) return false
+    const namespace = url.pathname.match(/namespaces\/([^/]+)\/pods$/)?.[1]
+    const pods = namespace === 'production' ? ['a', 'b'] : namespace === 'kube-system' ? ['c'] : []
+    const start = Number(url.searchParams.get('continue') || 0), limit = Number(url.searchParams.get('limit'))
+    send(200, { items: pods.slice(start, start + limit).map(name => ({ metadata: { name, namespace }, spec: { containers: [] }, status: { phase: 'Running' } })), metadata: { continue: start + limit < pods.length ? String(start + limit) : '' } })
+    return true
+  } })
+  const input = { ...scope, namespaces: ['production', 'kube-system'], pageSize: 2 }
+  const first = await manager.pagePods(input)
+  assert.deepEqual(first.items.map(item => item.name), ['a', 'b'])
+  assert.deepEqual(first.nextCursor, { index: 1, token: '' })
+  const second = await manager.pagePods({ ...input, cursor: first.nextCursor })
+  assert.deepEqual(second.items.map(item => item.name), ['c'])
+  assert.equal(second.nextCursor, null)
+  assert.deepEqual(state.calls.map(call => [call.path.includes('/production/'), call.query.limit, call.query.continue]), [[true, '2', undefined], [false, '1', undefined], [false, '2', undefined]])
+  await assert.rejects(manager.pagePods({ ...input, cursor: { index: 99, token: '' } }), /游标/)
+  await assert.rejects(manager.pagePods({ ...input, pageSize: 101 }), /每页条数/)
+})
+
+test('Pod page follows an empty chunk with a continue token and reports expired cursors', async t => {
+  const { manager, scope, state } = await setup(t, { handler: ({ url, send }) => {
+    if (!url.pathname.endsWith('/pods')) return false
+    const token = url.searchParams.get('continue')
+    if (token === 'expired') { send(410, { message: 'continue token expired' }); return true }
+    if (!token) { send(200, { items: [], metadata: { continue: 'empty-first' } }); return true }
+    send(200, { items: [{ metadata: { name: 'after-empty', namespace: 'production' }, spec: { containers: [] }, status: { phase: 'Running' } }], metadata: {} })
+    return true
+  } })
+  const page = await manager.pagePods({ ...scope, pageSize: 25 })
+  assert.deepEqual(page.items.map(item => item.name), ['after-empty'])
+  assert.equal(page.nextCursor, null)
+  assert.deepEqual(state.calls.map(call => call.query.continue), [undefined, 'empty-first'])
+  await assert.rejects(manager.pagePods({ ...scope, cursor: { index: 0, token: 'expired' } }), error => error.status === 410 && /刷新 Pod 列表/.test(error.message))
+})
+
+test('Pod stream exposes the first page before later pages finish', async t => {
+  let releaseSecond
+  const second = new Promise(resolve => { releaseSecond = resolve })
+  t.after(() => releaseSecond())
+  const pods = Array.from({ length: 101 }, (_, index) => ({ metadata: { name: `pod-${index}`, namespace: 'production', uid: `uid-${index}` }, spec: { containers: [{ name: 'main', env: [{ name: 'SECRET', value: 'must-not-leak' }] }] }, status: { phase: 'Running' } }))
+  const { store, manager, scope, state } = await setup(t, { handler: async ({ url, send }) => {
+    if (!url.pathname.endsWith('/api/v1/pods')) return false
+    const continued = Boolean(url.searchParams.get('continue'))
+    if (continued) await second
+    send(200, { items: continued ? pods.slice(100) : pods.slice(0, 100), metadata: { continue: continued ? '' : 'next' } })
+    return true
+  } })
+  const server = http.createServer(createApi({ store, manager }))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.close(); server.closeAllConnections() })
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/rancher/pods/stream`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(scope) })
+  assert.equal(response.status, 200)
+  assert.match(response.headers.get('content-type'), /ndjson/)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let first = ''
+  while (!first.includes('\n')) first += decoder.decode((await reader.read()).value)
+  const [firstLine, ...remaining] = first.split('\n')
+  const page = JSON.parse(firstLine)
+  assert.equal(page.type, 'page')
+  assert.equal(page.items.length, 100)
+  assert.equal(first.includes('must-not-leak'), false)
+  releaseSecond()
+  let rest = remaining.join('\n')
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    rest += decoder.decode(value)
+  }
+  assert.deepEqual(rest.trim().split('\n').map(line => JSON.parse(line).type), ['page', 'end'])
+  assert.equal(JSON.parse(rest.trim().split('\n')[0]).items.length, 1)
+  assert.ok(state.calls.filter(call => call.path.endsWith('/api/v1/pods')).every(call => call.query.limit === '100'))
+})
+
 test('multi-namespace errors never silently return a partial union', async t => {
   const { run } = await setup(t, { handler: ({ url, send }) => {
     if (url.pathname.includes('/namespaces/kube-system/')) { send(403, { message: 'kube-system forbidden' }); return true }

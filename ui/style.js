@@ -55,7 +55,8 @@ export const CSS = `
 .rc-log-search{flex:1;min-width:150px;max-width:320px}.rc-log-search>span{width:100%}.rc-log-search input{font-size:12px}
 .rc-log-match-count{font-size:11px;color:var(--rc-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .rc-log-reading-toolbar .rc-check{margin-left:4px}.rc-log-reading-toolbar>.rc-select{width:72px}
-.rc-pod-dialog .rc-code.rc-logs{flex:1;height:auto;min-height:80px;max-height:none;padding:8px 0;line-height:1.7;scrollbar-width:thin;overflow:auto;overflow-anchor:none;white-space:pre;overflow-wrap:normal}
+.rc-log-viewport{display:flex;flex:1;min-height:80px;overflow:hidden}
+.rc-pod-dialog .rc-code.rc-logs{flex:1;height:100%;min-height:0;max-height:none;padding:8px 0;line-height:1.7;scrollbar-width:thin;overflow:auto;overflow-anchor:none;white-space:pre;overflow-wrap:normal}
 .rc-log-line{display:flex;min-width:100%;width:max-content;padding-right:12px}
 .rc-log-line>span{display:block;min-width:0;padding-left:12px;flex:1}
 .rc-log-numbers .rc-log-line:before{content:attr(data-line);display:block;position:sticky;left:0;flex:none;width:5ch;padding:0 7px 0 3px;text-align:right;color:var(--rc-muted);background:var(--rc-soft);border-right:1px solid var(--rc-line);user-select:none;font-size:inherit;z-index:1}
@@ -65,5 +66,10 @@ export const CSS = `
 .rc-logs mark.rc-log-hit-active{background:color-mix(in srgb,var(--rc-warn) 40%,transparent);outline:1px solid var(--rc-warn)}
 .rc-log-bottom{display:flex;align-items:center;gap:6px;flex:none;font-size:11px;color:var(--rc-muted);flex-wrap:wrap}
 .rc-log-bottom>.rc-button{font-size:11px}
+.rc-toolbar .rc-layout-tabs{flex:none;width:98px;padding:2px 4px}
+.rc-layout-tabs>[role=tab]{height:24px;padding:0}
+.rc-layout-tabs>[aria-hidden=true]{top:2px;bottom:2px}
+.rc-resource-body{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}
+.rc-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 @container(max-width:620px){.rc-log-source-toolbar{gap:8px}.rc-log-source-toolbar .rc-field:first-child{flex-basis:100%;max-width:none}.rc-log-source-toolbar .rc-check{margin-left:auto}.rc-log-reading-toolbar>.rc-spacer{display:none}.rc-log-search{max-width:none;flex-basis:100%}.rc-log-reading-toolbar>.rc-select{margin-left:auto}.rc-log-status{font-size:10px}.rc-pod-facts{font-size:10px}}
 `

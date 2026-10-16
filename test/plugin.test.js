@@ -4,6 +4,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import vm from 'node:vm'
+import * as React from 'react'
+import * as ReactDom from 'react-dom'
+import * as ReactJsxRuntime from 'react/jsx-runtime'
 import { Context, Service } from '@deepseek-ai/cordis'
 import * as plugin from '../index.js'
 
@@ -38,18 +41,19 @@ test('built browser registers an independent workbench, sidebar entry and connec
   let plugin, removed = false
   const descriptors = []
   const requested = []
-  const react = { createContext: () => ({}), forwardRef: () => () => {}, createElement: (...args) => ({ args }), Fragment: Symbol('Fragment') }
   const globals = {
     window: { __ModuleLoader__: { load: entry => {
       assert.equal(entry.id, 'dsh-rancher')
       plugin = entry.factory(id => {
         requested.push(id)
-        if (id === 'react') return react
+        if (id === 'react') return React
+        if (id === 'react/jsx-runtime') return ReactJsxRuntime
+        if (id === 'react-dom') return ReactDom
         assert.equal(id, '@deepseek-ai/dsh-client-ui-primitives')
         return Object.fromEntries(['Button', 'Input', 'Checkbox', 'Modal', 'Menu', 'SegmentedTabs', 'Tag', 'StateDot'].map(name => [name, () => null]))
       })
     } } },
-    document: { createElement: () => ({ setAttribute() {}, remove() { removed = true } }), head: { appendChild() {} } },
+    document: { documentElement: { style: {} }, createElement: () => ({ style: {}, setAttribute() {}, remove() { removed = true } }), head: { appendChild() {} } },
   }
   vm.runInNewContext(fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8'), globals)
   assert.ok(requested.includes('@deepseek-ai/dsh-client-ui-primitives'), 'Controls must resolve from the DSH module table')
