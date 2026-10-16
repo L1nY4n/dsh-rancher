@@ -22,7 +22,7 @@ export async function mockRancher({ state = fixtureState(), handler, tlsOptions 
     for await (const chunk of req) chunks.push(chunk)
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined
     const url = new URL(req.url, 'http://localhost')
-    state.calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, authorization: req.headers.authorization, contentType: req.headers['content-type'] })
+    state.calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, authorization: req.headers.authorization, accept: req.headers.accept, contentType: req.headers['content-type'] })
     const send = (status, value) => { res.writeHead(status, { 'content-type': typeof value === 'string' ? 'text/plain' : 'application/json' }); res.end(typeof value === 'string' ? value : JSON.stringify(value)) }
     if (handler && await handler({ req, res, url, body, send })) return
     if (url.pathname === '/v3-public/localProviders/local' && req.method === 'POST' && url.searchParams.get('action') === 'login') {

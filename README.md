@@ -21,6 +21,8 @@ Pod 日志、详情及节点详情在右侧抽屉中打开。删除、重启、�
 
 0.2.6 支持最多同时选择 100 个命名空间，未指定时表示全部。Pod、工作负载、服务、事件和 Pod 指标按所选空间分别读取并合并，不要求用户具备集群范围的列表权限；任一空间失败会明确报错，不显示不完整的成功列表。刷新后仅移除已消失的选中空间，其他选择继续保留。Pod 可切换平铺、按命名空间或按节点树形分组，支持单组或全部折叠。组头显示匹配 Pod 总数、待关注数量及已有采样的 CPU/内存合计；筛选、排序和分页继续有效，跨页组头另标当前页数量。
 
+0.2.7 修复 Kubernetes Pod 日志请求的内容协商。Rancher/Kubernetes 代理要求 `Accept` 使用受支持的资源媒体类型，插件现在用 `application/json` 发起日志请求，同时继续按纯文本流读取日志内容。
+
 日志默认使用 Kubernetes `follow=true` 实时流，支持普通/初始化容器切换、末尾行数、暂停/继续、自动滚动、复制与断线手动重连；关闭抽屉、切换容器或转到详情时取消上游流。上一次容器日志和关闭实时跟随后的日志使用快照。暂停保留当前内容，继续时重连并重新读取末尾窗口。浏览器最多保留最近 10,000 行或约 1 MiB 字符缓冲，超过时提示截断；服务端超过 64 KiB 字符的单行整行省略，并按完整行脱敏，避免网络分块拆开凭据。实时流的 20 秒超时只限制连接建立，容器暂时没有新日志不会被定时断开。
 
 交互参考 Rancher 官方 Dashboard 的 [NamespaceFilter](https://github.com/rancher/dashboard/blob/master/shell/components/nav/NamespaceFilter.vue)、[ResourceTable](https://github.com/rancher/dashboard/blob/master/shell/components/ResourceTable.vue) 和 [ContainerLogs](https://github.com/rancher/dashboard/blob/master/shell/components/Window/ContainerLogs.vue)：吸纳多空间累加选择、资源分组与数量、容器日志跟随及历史实例切换，控件和主题仍使用 DSH 原生组件。
@@ -59,7 +61,7 @@ dsh plugin --profile web update dsh-rancher
 dsh plugin --profile web ls
 ```
 
-安装来源也可以固定到发布标签，例如 `github:L1nY4n/dsh-rancher#v0.2.6`，以避免自动跟随后续提交。
+安装来源也可以固定到发布标签，例如 `github:L1nY4n/dsh-rancher#v0.2.7`，以避免自动跟随后续提交。
 
 需要支持 `dsh.bundle.patch`、浏览器 `ModuleLoader`、`main`、`sidebar.panellist`、`settings.section`，并内置 `@deepseek-ai/dsh-client-ui-primitives` 的 DSH。浏览器端使用宿主的 `slots`、`layout` 和 UI 控件；后端使用 `webServer`、`connection` 与 `tools`。没有生产 npm 依赖，不会额外安装一套 React 或控件库。
 

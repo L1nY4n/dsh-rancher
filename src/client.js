@@ -52,7 +52,10 @@ export class RancherClient {
         // Rancher installations commonly use private/self-signed certificates.
         // Scope this policy to this request; never change the host's TLS defaults.
         method, signal, agent: false, rejectUnauthorized: false,
-        headers: { ...(authorization ? { authorization } : {}), accept: text ? 'text/plain' : 'application/json',
+        // Kubernetes log subresources return plain text, but their request
+        // content negotiation still accepts the Kubernetes resource media
+        // types rather than `text/plain`.
+        headers: { ...(authorization ? { authorization } : {}), accept: 'application/json',
           ...(payload === undefined ? {} : { 'content-type': contentType, 'content-length': Buffer.byteLength(payload) }) },
       }, response => {
         let size = 0
@@ -119,7 +122,9 @@ export class RancherClient {
     const transport = target.protocol === 'https:' ? https : http
     let upstream
     const request = transport.request(target, { method: 'GET', signal, agent: false, rejectUnauthorized: false,
-      headers: { authorization, accept: 'text/plain' } })
+      // The response is consumed as a text stream, while the Kubernetes API
+      // expects a supported resource media type in `Accept`.
+      headers: { authorization, accept: 'application/json' } })
     // Only the handshake has a deadline: quiet containers may have no new lines for hours.
     const timeout = setTimeout(() => request.destroy(new ApiError(504, 'Rancher 日志连接超时（20 秒）')), 20_000)
     try {

@@ -101,6 +101,25 @@ test('multi-namespace errors never silently return a partial union', async t => 
   await assert.rejects(run({ operation: 'pods', namespaces: ['production', 'kube-system'] }), /forbidden/)
 })
 
+test('snapshot and follow logs negotiate Kubernetes media types while reading plain text', async t => {
+  const { run, manager, scope, state } = await setup(t, { handler: ({ req, res, url, send }) => {
+    if (!url.pathname.endsWith('/log')) return false
+    if (req.headers.accept !== 'application/json') {
+      send(406, { message: 'only the following media types are accepted: application/json, application/yaml' })
+      return true
+    }
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('plain log line\n')
+    return true
+  } })
+  assert.equal((await run({ operation: 'logs', namespace: 'production', name: 'api' })).text, 'plain log line\n')
+  const events = []
+  await manager.streamLogs({ ...scope, namespace: 'production', name: 'api' }, undefined, event => events.push(event))
+  assert.deepEqual(events.map(event => event.type), ['ready', 'log', 'end'])
+  assert.equal(events[1].text, 'plain log line\n')
+  assert.deepEqual(state.calls.filter(call => call.path.endsWith('/log')).map(call => call.accept), ['application/json', 'application/json'])
+})
+
 test('follow logs deliver incrementally, redact chunk boundaries and drop oversized lines', async t => {
   const { manager, scope, state } = await setup(t, { handler: ({ res, url }) => {
     if (!url.pathname.endsWith('/log')) return false
@@ -121,6 +140,7 @@ test('follow logs deliver incrementally, redact chunk boundaries and drop oversi
   assert.equal(events.at(-1).type, 'end')
   assert.equal(state.calls.at(-1).query.follow, 'true')
   assert.equal(state.calls.at(-1).query.container, 'main')
+  assert.equal(state.calls.at(-1).accept, 'application/json')
   const count = state.calls.length
   for (const input of [{ previous: true }, { tailLines: 0 }, { namespace: '' }, { name: '../secret' }]) await assert.rejects(manager.streamLogs({ ...scope, namespace: 'production', name: 'api', ...input }, undefined, async () => {}))
   assert.equal(state.calls.length, count)
