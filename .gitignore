@@ -1,0 +1,5 @@
+node_modules/
+# client.js is the committed browser bundle required by GitHub installs.
+work/
+*.tgz
+.env
