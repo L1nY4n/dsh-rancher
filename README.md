@@ -21,7 +21,7 @@ Pod 日志、详情及节点详情在右侧抽屉中打开。删除、重启、�
 
 0.2.6 支持最多同时选择 100 个命名空间，未指定时表示全部。Pod、工作负载、服务、事件和 Pod 指标按所选空间分别读取并合并，不要求用户具备集群范围的列表权限；任一空间失败会明确报错，不显示不完整的成功列表。刷新后仅移除已消失的选中空间，其他选择继续保留。Pod 可切换平铺、按命名空间或按节点树形分组，支持单组或全部折叠。组头显示匹配 Pod 总数、待关注数量及已有采样的 CPU/内存合计；筛选、排序和分页继续有效，跨页组头另标当前页数量。
 
-0.2.8 的 Pod 日志窗口支持拖动左侧胶囊手柄调整宽度，并在本机记住宽度；双击边缘恢复默认，聚焦边缘后可用左右方向键微调。日志正文填满窗口剩余高度，支持自动换行、行号、字号、搜索高亮与上下匹配、Cmd/Ctrl+F、跳到最新及下载当前已加载日志。向上滚动或搜索会关闭自动滚动，仍继续接收实时日志。时间范围支持最近 5 分钟至 24 小时，与末尾行数共同限制服务器返回的日志；搜索仅针对已加载缓冲，下载不包含行号。
+Pod 日志窗口支持拖动左侧细线手柄调整宽度，并在本机记住宽度；双击边缘恢复默认，聚焦边缘后可用左右方向键微调。手柄沿用 DSH 的 8px 拖拽区域和主题颜色，悬停或聚焦时增强提示，不显示独立胶囊。日志正文填满窗口剩余高度，支持自动换行、行号、字号、搜索高亮与上下匹配、Cmd/Ctrl+F、跳到最新及下载当前已加载日志。向上滚动或搜索会关闭自动滚动，仍继续接收实时日志。时间范围支持最近 5 分钟至 24 小时，与末尾行数共同限制服务器返回的日志；搜索仅针对已加载缓冲，下载不包含行号。
 
 0.2.7 修复 Kubernetes Pod 日志请求的内容协商。Rancher/Kubernetes 代理要求 `Accept` 使用受支持的资源媒体类型，插件现在用 `application/json` 发起日志请求，同时继续按纯文本流读取日志内容。
 
@@ -63,7 +63,7 @@ dsh plugin --profile web update dsh-rancher
 dsh plugin --profile web ls
 ```
 
-安装来源也可以固定到发布标签，例如 `github:L1nY4n/dsh-rancher#v0.2.8`，以避免自动跟随后续提交。
+安装来源也可以固定到发布标签，例如 `github:L1nY4n/dsh-rancher#v0.2.9`，以避免自动跟随后续提交。
 
 需要支持 `dsh.bundle.patch`、浏览器 `ModuleLoader`、`main`、`sidebar.panellist`、`settings.section`，并内置 `@deepseek-ai/dsh-client-ui-primitives` 的 DSH。浏览器端使用宿主的 `slots`、`layout` 和 UI 控件；后端使用 `webServer`、`connection` 与 `tools`。没有生产 npm 依赖，不会额外安装一套 React 或控件库。
 
@@ -77,16 +77,16 @@ npm test
 npm pack
 ```
 
-得到 `dsh-rancher-0.2.8.tgz`。
+得到 `dsh-rancher-0.2.9.tgz`。
 
-桌面版：完全退出 DSH 后，使用本机已安装的 CLI 执行 `dsh plugin --profile desktop add file:/Users/l1ny4n/Documents/study/dsh-rancher/dsh-rancher-0.2.8.tgz`，再重新打开 DSH。也可使用设置 → 插件中的本地包安装入口。
+桌面版：完全退出 DSH 后，使用本机已安装的 CLI 执行 `dsh plugin --profile desktop add file:/Users/l1ny4n/Documents/study/dsh-rancher/dsh-rancher-0.2.9.tgz`，再重新打开 DSH。也可使用设置 → 插件中的本地包安装入口。
 
-升级后，请确认插件清单显示 `0.2.8`，并完全退出 DSH 后重新打开；仅刷新页面不会重载后端。升级会保留现有 Rancher 连接与认证信息，旧的证书信任配置将被忽略。
+升级后，请确认插件清单显示 `0.2.9`，并完全退出 DSH 后重新打开；仅刷新页面不会重载后端。升级会保留现有 Rancher 连接与认证信息，旧的证书信任配置将被忽略。
 
 Web profile 使用 CLI：
 
 ```sh
-dsh plugin --profile web add file:/Users/l1ny4n/Documents/study/dsh-rancher/dsh-rancher-0.2.8.tgz
+dsh plugin --profile web add file:/Users/l1ny4n/Documents/study/dsh-rancher/dsh-rancher-0.2.9.tgz
 dsh plugin --profile web ls
 dsh --profile web --dump-config
 dsh --profile web --no-open

@@ -49,11 +49,10 @@ ${t.runtime} \xB7 Pod \u5BB9\u91CF ${t.podCapacity??"\u2014"}`},t.name),e.defaul
 .rc-pod-dialog .rc-dialog-body>.rc-row{flex:none}
 .rc-pod-dialog .rc-pod-panel{flex:1;min-height:0;gap:8px;overflow:hidden}
 .rc-pod-dialog .rc-detail{flex:1;padding-right:4px}
-.rc-drawer-resize{position:absolute;left:0;top:0;bottom:0;width:16px;cursor:ew-resize;touch-action:none;user-select:none;z-index:5;outline:none}
-.rc-drawer-resize:before{content:'';position:absolute;left:1px;top:calc(50% - 32px);width:13px;height:64px;border:1px solid var(--rc-line);border-radius:8px;background:var(--rc-panel);box-shadow:0 1px 5px color-mix(in srgb,var(--rc-fg) 10%,transparent);transition:background .15s,border-color .15s}
-.rc-drawer-resize:after{content:'';position:absolute;left:7px;top:calc(50% - 1px);width:2px;height:2px;border-radius:50%;background:var(--rc-muted);box-shadow:0 -7px var(--rc-muted),0 7px var(--rc-muted);pointer-events:none}
-.rc-drawer-resize:hover:before,.rc-drawer-resize:active:before{background:var(--rc-hover);border-color:var(--rc-secondary)}
-.rc-drawer-resize:focus-visible:before{outline:2px solid var(--rc-accent);outline-offset:-2px}
+.rc-drawer-resize{position:absolute;left:0;top:0;bottom:0;width:8px;cursor:col-resize;touch-action:none;user-select:none;z-index:5;outline:none}
+.rc-drawer-resize:before{content:'';position:absolute;left:3px;top:50%;width:2px;height:28px;transform:translateY(-50%);border-radius:2px;background:var(--dsw-alias-scrollbar-bg-l1,var(--rc-line));transition:height .15s,background .15s}
+.rc-drawer-resize:hover:before,.rc-drawer-resize:active:before,.rc-drawer-resize:focus-visible:before{height:56px;background:var(--dsw-alias-label-caption,var(--rc-muted))}
+.rc-drawer-resize:focus-visible:before{outline:2px solid var(--rc-accent);outline-offset:2px}
 .rc-log-source-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:none}
 .rc-log-source-toolbar .rc-field{flex-direction:row;align-items:center;gap:6px}
 .rc-log-source-toolbar .rc-field:first-child{flex:1;min-width:140px;max-width:360px}

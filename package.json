@@ -1,6 +1,6 @@
 {
   "name": "dsh-rancher",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "description": "Rancher cluster, node, Pod and workload management inside DeepSeek Harness",
   "author": "L1nY4n",
